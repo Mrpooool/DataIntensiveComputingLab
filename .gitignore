@@ -1,0 +1,22 @@
+# 本地环境与敏感配置
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# 数据与 Spark 运行产物
+data/
+spark-warehouse/
+metastore_db/
+artifacts/
+*.log
+
+# Python 与编辑器缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.DS_Store
+Thumbs.db
