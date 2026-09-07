@@ -2,7 +2,7 @@
 
 课程作业：使用 PySpark 清洗出租车、天气、空气质量和区域数据，保存为 Delta 表，并生成每行代表一趟行程的整合表，供后续分析使用。
 
-当前状态：依赖已安装且 `pip check` 通过；Spark/Delta 读写、课程处理流程和性能实验尚未验收。
+当前状态：B 负责的真实数据剖析、字段契约、标准化、校验、去重和测试已经实现并通过全量数据验证。A 的 Delta 读写/通用入口及 C 的关联与性能实验仍待完成。
 
 ## 环境安装
 
@@ -37,6 +37,41 @@ python -m venv .venv
 | C | 5、6 | 数据关联、两种存储方案的性能实验 |
 
 先共同确认字段和时间规则，再并行实现；按老师 Task 1–6 验收。W1 交付代码、3–5 页设计报告、架构图、简短性能报告和本 README。
+
+## B：标准化与校验
+
+B 的实现位于 `src/dic_pipeline/`，数据规则位于 `configs/datasets.json`，已验证的数据目录与字段契约位于 `docs/`。
+
+在 macOS/Linux 中运行测试：
+
+```bash
+PYTHONPATH=src python -m unittest -v
+```
+
+在 PowerShell 中运行测试：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest -v
+```
+
+只运行 B 的转换和校验、暂不写 Delta：
+
+```bash
+PYTHONPATH=src spark-submit scripts/run_b_preparation.py all --data-dir "/path/to/lab-data"
+```
+
+供 A 调用的接口为：
+
+```python
+from dic_pipeline import load_dataset_config, prepare
+
+result = prepare(raw_df, load_dataset_config("taxi"), run_id="batch-id")
+# A writes result.accepted, result.rejected and result.metrics.
+result.release()
+```
+
+必须在 accepted 和 rejected 都写完后调用 `release()`，以释放它们共享的 Spark 缓存。
 
 ## Git 协作
 
