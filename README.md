@@ -2,7 +2,7 @@
 
 课程作业：使用 PySpark 清洗出租车、天气、空气质量和区域数据，保存为 Delta 表，并生成每行代表一趟行程的整合表，供后续分析使用。
 
-当前状态：B 负责的真实数据剖析、字段契约、标准化、校验、去重和测试已经实现并通过全量数据验证。A 的 Delta 读写/通用入口及 C 的关联与性能实验仍待完成。
+当前状态：A 的通用摄入与 Delta 存储、B 的数据契约与质量处理均已实现并通过全量验证；C 的关联与性能实验仍待完成。
 
 ## 环境安装
 
@@ -84,9 +84,45 @@ cd DataIntensiveComputingLab
 
 拉取最新 `main` 后，每人创建自己的功能分支，例如 `feat/integration`。提交前检查 `git diff`，只提交相关代码和配置；推送分支后通过 Pull Request 合并。新增依赖时同步更新版本清单，并通知队友安装。
 
-## 角色 A 实现
+## A：存储与通用摄入
 
-角色 A 的 Task 2、Task 3 实现按职责放置：
+A 的实现位于 `src/dic_pipeline/ingestion.py`，数据源和输出文件配置位于
+`configs/datasets.json`，统一入口为 `scripts/run_ingestion.py`，测试位于
+`tests/test_ingestion.py`。
+
+### Windows 从零配置
+
+先安装 Miniconda 或 Anaconda，并确认新 PowerShell 中可以运行 `conda --version`。
+然后在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
+```
+
+该脚本会在项目内创建 `.venv`，安装 Python 3.11.9、JDK 21 和
+`requirements.txt`，并执行 `pip check`。原生 Windows 的 Spark 本地文件系统还
+需要 `.hadoop/bin/winutils.exe` 和 `hadoop.dll`；脚本会从固定地址下载 Hadoop
+3.3.6 community helpers，并验证固定 SHA-256。Apache 不发布官方 winutils，因此
+若小组不接受第三方 binary，应统一改用 WSL/Linux。
+
+等价的手动命令为：
+
+```powershell
+conda create --prefix .\.venv -y -c conda-forge python=3.11.9 openjdk=21 pip
+.\.venv\python.exe -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_windows_hadoop.ps1
+.\.venv\python.exe -m pip check
+```
+
+在 macOS/Linux 中不需要 Windows Hadoop helpers：
+
+```bash
+conda create --prefix ./.venv -y -c conda-forge python=3.11.9 openjdk=21 pip
+./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip check
+```
+
+### 文件结构
 
 ```text
 configs/
@@ -100,15 +136,40 @@ tests/
   test_ingestion.py               # A：reader/writer/metadata 测试
 ```
 
-通用部分支持 CSV/Parquet、必需字段校验、`snake_case`、accepted/rejected
-对账、Delta 输出及摄入统计。数据集专用的 timestamp/type 转换、去重和质量规则由
-B 的 `prepare()` 实现，A 在写入后重新读取 Delta 并核对行数。
-
-完整运行命令（本机 16 GB 内存的已验证配置）：
+在 PowerShell 中运行 A/B 全部测试：
 
 ```powershell
-python -m scripts.run_ingestion --dataset all --driver-memory 6g --master "local[4]" --shuffle-partitions 128
+$env:PYTHONPATH = "src"
+.\.venv\python.exe -m unittest -v
 ```
+
+在 macOS/Linux 中运行测试：
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m unittest -v
+```
+
+全量摄入命令（本机 16 GB 内存的已验证配置）：
+
+```powershell
+.\.venv\python.exe -m scripts.run_ingestion --dataset all `
+  --driver-memory 6g --master "local[4]" --shuffle-partitions 128
+```
+
+只运行一个数据集时，将 `all` 改为 `taxi`、`weather`、`air_quality` 或
+`taxi_zones`。可以用 `--data-dir`、`--output-root` 和 `--run-id` 覆盖默认输入、
+输出和批次号。
+
+供 C 写 integrated 和 benchmark Delta 表的公共接口为：
+
+```python
+from dic_pipeline import write_delta
+
+write_delta(frame, output_path, partition_by=["pickup_date"])
+```
+
+A 调用 B 的 `prepare()`，写出 accepted/rejected，重新读取两张 Delta 表核对行数，
+最后向 `metadata/ingestion_runs` 追加运行状态和统计。
 
 课程问题的书面回答见 `docs/role_a_task2_task3.md`，架构图见
 `docs/architecture.md`；课程要求与详细分工见 `Assignment.md` 和 `task_plan.md`。

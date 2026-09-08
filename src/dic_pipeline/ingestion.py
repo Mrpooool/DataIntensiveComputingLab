@@ -64,10 +64,13 @@ def create_spark(
     shuffle_partitions: int = 128,
 ) -> SparkSession:
     """Create the shared local Spark session with Delta enabled."""
-    java_home = PROJECT_ROOT / ".venv" / "Library"
+    environment = PROJECT_ROOT / ".venv"
     hadoop_home = PROJECT_ROOT / ".hadoop"
-    if java_home.exists():
-        os.environ.setdefault("JAVA_HOME", str(java_home))
+    java_executable = "java.exe" if os.name == "nt" else "java"
+    for java_home in (environment / "Library", environment):
+        if (java_home / "bin" / java_executable).exists():
+            os.environ.setdefault("JAVA_HOME", str(java_home))
+            break
     if hadoop_home.exists():
         os.environ.setdefault("HADOOP_HOME", str(hadoop_home))
         os.environ.setdefault("hadoop.home.dir", str(hadoop_home))
