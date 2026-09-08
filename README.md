@@ -48,3 +48,32 @@ cd DataIntensiveComputingLab
 ```
 
 拉取最新 `main` 后，每人创建自己的功能分支，例如 `feat/integration`。提交前检查 `git diff`，只提交相关代码和配置；推送分支后通过 Pull Request 合并。新增依赖时同步更新版本清单，并通知队友安装。
+
+## 角色 A 实现
+
+角色 A 的 Task 2、Task 3 实现按职责放置：
+
+```text
+configs/
+  datasets.py             # 路径、格式、必需字段、输出位置
+src/
+  ingestion.py            # 通用读取、schema 检查、Delta 写入、metadata
+  transforms.py           # B 负责的数据集专用转换（待合并）
+scripts/
+  run_ingestion.py        # 命令行运行入口
+```
+
+通用部分支持 CSV/Parquet、必需字段校验、`snake_case`、accepted/rejected
+对账、Delta 输出及摄入统计。数据集专用的 timestamp/type 转换、去重和质量规则由
+B 在 `src/transforms.py` 中实现。
+
+B 的 `src/transforms.py` 合并后运行：
+
+```powershell
+.\.venv\python.exe -m scripts.run_ingestion --dataset all
+# 或只运行一个
+.\.venv\python.exe -m scripts.run_ingestion --dataset weather
+```
+
+课程问题的书面回答见 `docs/role_a_task2_task3.md`；课程要求与详细分工见
+`Assignment.md` 和 `task_plan.md`。
