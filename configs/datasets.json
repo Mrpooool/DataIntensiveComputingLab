@@ -1,6 +1,9 @@
 {
   "taxi": {
     "dataset": "taxi",
+    "source_path": "yellow_tripdata_2024-*.parquet",
+    "source_format": "parquet",
+    "output_files": 8,
     "schema_version": "1.0.0",
     "rule_version": "1.0.0",
     "source_timezone": "America/New_York",
@@ -10,6 +13,10 @@
   },
   "weather": {
     "dataset": "weather",
+    "source_path": "weather.csv",
+    "source_format": "csv",
+    "reader_options": {"header": "true"},
+    "output_files": 1,
     "schema_version": "1.0.0",
     "rule_version": "1.0.0",
     "source_timezone": "UTC",
@@ -17,6 +24,10 @@
   },
   "air_quality": {
     "dataset": "air_quality",
+    "source_path": "hourly_88101_2024.csv",
+    "source_format": "csv",
+    "reader_options": {"header": "true"},
+    "output_files": 1,
     "schema_version": "1.0.0",
     "rule_version": "1.0.0",
     "scope_state": "New York",
@@ -33,6 +44,10 @@
   },
   "taxi_zones": {
     "dataset": "taxi_zones",
+    "source_path": "taxi_zone_lookup.csv",
+    "source_format": "csv",
+    "reader_options": {"header": "true"},
+    "output_files": 1,
     "schema_version": "1.0.0",
     "rule_version": "1.0.0",
     "duplicate_key": ["location_id"]
