@@ -1,36 +1,29 @@
-# W1 Architecture
+# Week 1 Data Platform Architecture
 
 ```mermaid
-flowchart LR
-    Raw["data/raw<br/>Taxi Parquet<br/>Weather CSV<br/>Air Quality CSV<br/>Zones CSV"]
-    Config["configs/datasets.json<br/>source + contract + versions"]
-    Reader["A: generic reader<br/>explicit raw schemas"]
-    Prepare["B: prepare()<br/>transform + validate + deduplicate"]
-    Accepted["accepted"]
-    Rejected["rejected"]
-    Writer["A: shared Delta writer<br/>write + read-back count check"]
-    Standard["data/delta/standardized<br/>four Delta tables"]
-    RejectTable["data/delta/rejected<br/>four Delta tables"]
-    Metadata["data/delta/metadata/ingestion_runs<br/>run ID + counts + versions + status"]
-    Integration["C: hourly aggregation<br/>left joins"]
-    Integrated["data/delta/integrated<br/>integrated_taxi_trips"]
+flowchart TB
+    Config["Configuration and contracts<br/>configs/datasets.json<br/>raw schemas, versions, validation rules"]
+    Raw["Raw data<br/>Taxi Parquet · Weather CSV<br/>Air Quality CSV · Taxi Zones CSV"]
+    Ingestion["Generic ingestion pipeline<br/>read files · validate schema · standardize columns<br/>normalize timestamps and types · validate values · deduplicate"]
+    Classification["Record classification<br/>accepted records · rejected records · ingestion metrics"]
+    DeltaWrite["Delta write and verification<br/>write tables · read back · verify row counts"]
+    Standardized["Standardized Delta tables<br/>taxi · weather · air_quality · taxi_zones"]
+    Rejected["Rejected Delta tables<br/>original values · error reasons · lineage"]
+    Metadata["Ingestion metadata Delta table<br/>run ID · counts · execution time<br/>schema/rule versions · status"]
+    Integration["Integration pipeline<br/>aggregate environmental observations by UTC hour<br/>join weather, air quality, pickup zone and dropoff zone"]
+    Integrated["Integrated Delta table<br/>integrated_taxi_trips<br/>one row per accepted Taxi trip"]
+    Layouts["Taxi storage layouts<br/>unpartitioned · partitioned by pickup_date"]
+    Benchmark["Benchmark and validation<br/>ingestion time · storage size · file count<br/>query latency · result consistency · query plans"]
 
-    Raw --> Reader
-    Config --> Reader
-    Config --> Prepare
-    Reader --> Prepare
-    Prepare --> Accepted
-    Prepare --> Rejected
-    Accepted --> Writer
-    Rejected --> Writer
-    Writer --> Standard
-    Writer --> RejectTable
-    Writer --> Metadata
-    Standard --> Integration
+    Config --> Ingestion
+    Raw --> Ingestion
+    Ingestion --> Classification
+    Classification --> DeltaWrite
+    DeltaWrite --> Standardized
+    DeltaWrite --> Rejected
+    DeltaWrite --> Metadata
+    Standardized --> Integration
     Integration --> Integrated
+    Standardized --> Layouts
+    Layouts --> Benchmark
 ```
-
-Role A owns the generic reader, configurable output root, shared Delta writer,
-read-back validation, ingestion metadata and CLI. Role B owns source contracts,
-standardization and data-quality rules. Role C consumes successful standardized
-tables and uses the shared writer for integration and benchmark outputs.
