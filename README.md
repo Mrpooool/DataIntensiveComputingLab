@@ -2,7 +2,7 @@
 
 课程作业：使用 PySpark 清洗出租车、天气、空气质量和区域数据，保存为 Delta 表，并生成每行代表一趟行程的整合表，供后续分析使用。
 
-当前状态：A 的通用摄入与 Delta 存储、B 的数据契约与质量处理均已实现并通过全量验证；C 的关联与性能实验仍待完成。
+当前状态：通用摄入、Delta 存储、数据契约和质量处理已实现并通过全量验证；关联与性能实验仍待完成。
 
 ## 环境安装
 
@@ -84,63 +84,69 @@ cd DataIntensiveComputingLab
 
 拉取最新 `main` 后，每人创建自己的功能分支，例如 `feat/integration`。提交前检查 `git diff`，只提交相关代码和配置；推送分支后通过 Pull Request 合并。新增依赖时同步更新版本清单，并通知队友安装。
 
-## A：存储与通用摄入
+## 存储与通用摄入
 
-A 的实现位于 `src/dic_pipeline/ingestion.py`，数据源和输出文件配置位于
+实现位于 `src/dic_pipeline/ingestion.py`，数据源和输出文件配置位于
 `configs/datasets.json`，统一入口为 `scripts/run_ingestion.py`，测试位于
 `tests/test_ingestion.py`。
 
 ### Windows 从零配置
 
-先安装 Miniconda 或 Anaconda，并确认新 PowerShell 中可以运行 `conda --version`。
-然后在项目根目录执行：
+先安装 Python 3.11.9 和 JDK 21，将 `JAVA_HOME` 指向 JDK 21，并确认：
+
+```powershell
+python --version
+java -version
+$env:JAVA_HOME
+```
+
+然后在项目根目录运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 ```
 
-该脚本会在项目内创建 `.venv`，安装 Python 3.11.9、JDK 21 和
-`requirements.txt`，并执行 `pip check`。原生 Windows 的 Spark 本地文件系统还
-需要 `.hadoop/bin/winutils.exe` 和 `hadoop.dll`；脚本会从固定地址下载 Hadoop
-3.3.6 community helpers，并验证固定 SHA-256。Apache 不发布官方 winutils，因此
-若小组不接受第三方 binary，应统一改用 WSL/Linux。
+该脚本会使用普通 `venv` 创建 `.venv`、安装 `requirements.txt` 并执行
+`pip check`。原生 Windows 的 Spark 本地文件系统还需要
+`.hadoop/bin/winutils.exe` 和 `hadoop.dll`；脚本会下载固定版本并验证 SHA-256。
+Apache 不发布官方 winutils，若不接受第三方 binary，应使用 WSL/Linux。
 
-等价的手动命令为：
+等价的手动配置为：
 
 ```powershell
-conda create --prefix .\.venv -y -c conda-forge python=3.11.9 openjdk=21 pip
-.\.venv\python.exe -m pip install -r requirements.txt
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_windows_hadoop.ps1
-.\.venv\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-在 macOS/Linux 中不需要 Windows Hadoop helpers：
+在 macOS/Linux 中安装 Python 3.11.9 和 JDK 21、设置 `JAVA_HOME` 后执行：
 
 ```bash
-conda create --prefix ./.venv -y -c conda-forge python=3.11.9 openjdk=21 pip
-./.venv/bin/python -m pip install -r requirements.txt
-./.venv/bin/python -m pip check
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
 ```
 
 ### 文件结构
 
 ```text
 configs/
-  datasets.json                   # A/B 共用的数据源与规则配置
+  datasets.json                   # 数据源、输出和规则配置
 src/dic_pipeline/
-  ingestion.py                    # A：读取、Delta 写入、读回校验、metadata
-  preparation.py                  # B：标准化与质量检查接口
+  ingestion.py                    # 读取、Delta 写入、读回校验、metadata
+  preparation.py                  # 标准化与质量检查流程
 scripts/
-  run_ingestion.py                # A：四数据集统一入口
+  run_ingestion.py                # 四数据集统一入口
 tests/
-  test_ingestion.py               # A：reader/writer/metadata 测试
+  test_ingestion.py               # reader/writer/metadata 测试
 ```
 
-在 PowerShell 中运行 A/B 全部测试：
+在 PowerShell 中运行全部测试：
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\python.exe -m unittest -v
+.\.venv\Scripts\python.exe -m unittest -v
 ```
 
 在 macOS/Linux 中运行测试：
@@ -149,10 +155,10 @@ $env:PYTHONPATH = "src"
 PYTHONPATH=src ./.venv/bin/python -m unittest -v
 ```
 
-全量摄入命令（本机 16 GB 内存的已验证配置）：
+全量摄入示例（已在 16 GB RAM 的 Windows 环境验证；其他电脑可调整资源参数）：
 
 ```powershell
-.\.venv\python.exe -m scripts.run_ingestion --dataset all `
+.\.venv\Scripts\python.exe -m scripts.run_ingestion --dataset all `
   --driver-memory 6g --master "local[4]" --shuffle-partitions 128
 ```
 
@@ -160,18 +166,5 @@ PYTHONPATH=src ./.venv/bin/python -m unittest -v
 `taxi_zones`。可以用 `--data-dir`、`--output-root` 和 `--run-id` 覆盖默认输入、
 输出和批次号。
 
-供 C 写 integrated 和 benchmark Delta 表的公共接口为：
-
-```python
-from dic_pipeline import write_delta
-
-write_delta(frame, output_path, partition_by=["pickup_date"])
-```
-
-A 调用 B 的 `prepare()`，写出 accepted/rejected，重新读取两张 Delta 表核对行数，
-最后向 `metadata/ingestion_runs` 追加运行状态和统计。
-
-课程问题的书面回答见 `docs/role_a_task2_task3.md`，架构图见
-`docs/architecture.md`；课程要求与详细分工见 `Assignment.md` 和 `task_plan.md`。
-全量联调已使用同一 `run_id` 成功写入 Taxi 9,554,576、Weather 8,784、
-Air Quality 51,885 和 Taxi Zones 265 条标准记录。
+运行结果写入 `data/delta/standardized`、`data/delta/rejected` 和
+`data/delta/metadata/ingestion_runs`。

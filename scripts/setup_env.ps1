@@ -12,12 +12,21 @@ elseif (Test-Path $VenvPython) {
     $Python = $VenvPython
 }
 else {
-    if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
-        throw "Conda was not found. Install Miniconda or Anaconda, then reopen PowerShell."
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        py -3.11 -m venv $Environment
     }
-    conda create --prefix $Environment -y -c conda-forge `
-        python=3.11.9 openjdk=21 pip
-    $Python = $CondaPython
+    elseif (Get-Command python -ErrorAction SilentlyContinue) {
+        python -m venv $Environment
+    }
+    else {
+        throw "Python 3.11 was not found. Install it and reopen PowerShell."
+    }
+    $Python = $VenvPython
+}
+
+$PythonVersion = & $Python -c "import platform; print(platform.python_version())"
+if ($PythonVersion -ne "3.11.9") {
+    throw "Expected Python 3.11.9, found $PythonVersion"
 }
 
 $LocalJava = Join-Path $Environment "Library\bin\java.exe"
