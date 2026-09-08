@@ -1,0 +1,40 @@
+{
+  "taxi": {
+    "dataset": "taxi",
+    "schema_version": "1.0.0",
+    "rule_version": "1.0.0",
+    "source_timezone": "America/New_York",
+    "valid_pickup_start_utc": "2024-01-01 05:00:00",
+    "valid_pickup_end_utc_exclusive": "2024-04-01 04:00:00",
+    "duplicate_key": ["record_id"]
+  },
+  "weather": {
+    "dataset": "weather",
+    "schema_version": "1.0.0",
+    "rule_version": "1.0.0",
+    "source_timezone": "UTC",
+    "duplicate_key": ["weather_hour_utc"]
+  },
+  "air_quality": {
+    "dataset": "air_quality",
+    "schema_version": "1.0.0",
+    "rule_version": "1.0.0",
+    "scope_state": "New York",
+    "scope_counties": ["Bronx", "Kings", "New York", "Queens", "Richmond"],
+    "duplicate_key": [
+      "state_code",
+      "county_code",
+      "site_num",
+      "parameter_code",
+      "poc",
+      "air_quality_hour_utc",
+      "method_code"
+    ]
+  },
+  "taxi_zones": {
+    "dataset": "taxi_zones",
+    "schema_version": "1.0.0",
+    "rule_version": "1.0.0",
+    "duplicate_key": ["location_id"]
+  }
+}
