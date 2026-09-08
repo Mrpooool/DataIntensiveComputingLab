@@ -11,10 +11,10 @@ data/
   raw/                         # 下载原文件；不可修改
   delta/
     standardized/              # 四张清洗、标准化后的 Delta 表
-      taxi_trips/
+      taxi/
       weather/
       air_quality/
-      taxi_zone_lookup/
+      taxi_zones/
     rejected/                  # 各数据集未通过质量检查的记录
     metadata/
       ingestion_runs/          # 摄入行数、拒绝数、耗时、schema 版本
@@ -30,10 +30,10 @@ integration；`rejected` 让错误记录可追踪；`metadata` 保存每次摄�
 
 每个数据集对应一个独立 Delta 表目录：
 
-- `standardized/taxi_trips`
+- `standardized/taxi`
 - `standardized/weather`
 - `standardized/air_quality`
-- `standardized/taxi_zone_lookup`
+- `standardized/taxi_zones`
 - `integrated/integrated_taxi_trips`
 - `metadata/ingestion_runs`
 
@@ -43,7 +43,7 @@ Delta 表使用 Parquet 数据文件和 `_delta_log` 事务日志，提供 ACID 
 ### 3. Naming conventions
 
 - 表名、目录名和标准列名统一使用 `snake_case`；
-- 名称使用完整业务含义，例如 `taxi_zone_lookup`，避免难理解的缩写；
+- 名称使用明确业务含义，例如 `air_quality`，避免难理解的缩写；
 - 时间字段由 B 统一为明确名称，例如 `pickup_timestamp`、`pickup_hour_utc`；
 - 原始列名只在 `raw` 层保留，标准表使用统一后的列名。
 
@@ -104,42 +104,42 @@ Taxi 和 Integrated 是大事实表，可能需要按时间分区；Weather、Zo
 
 ### 实现流程
 
-`src/ingestion.py` 对所有数据集使用同一流程：
+`src/dic_pipeline/ingestion.py` 对所有数据集使用同一流程：
 
 ```text
 读取 CSV/Parquet
-  -> 检查 required_columns
-  -> 列名转 snake_case
-  -> 调用 dataset-specific transform
+  -> 应用显式 raw Schema
+  -> 调用 B 的 prepare()
   -> 检查 input = accepted + rejected
   -> 写 standardized/rejected Delta 表
+  -> 读回并核对写入行数
   -> 写 ingestion metadata
 ```
 
-配置集中在 `configs/datasets.py`，运行入口是 `scripts/run_ingestion.py`。
+数据源与规则配置集中在 `configs/datasets.json`，运行入口是
+`scripts/run_ingestion.py`。
 
 ### Assignment 要求对应
 
 | Assignment 要求 | 实现位置 |
 | --- | --- |
 | 加载 CSV 和 Parquet | `read_dataset()` 根据配置选择 Spark reader |
-| 验证输入 Schema | 读取后检查 `required_columns` |
-| 标准化列名 | `snake_case()` |
-| 统一 timestamp / 类型 | B 的 dataset-specific transform |
-| 应用专用转换规则 | `TRANSFORMS[dataset]` |
-| 重复、空主键、非法时间/数值 | B 的 transform 生成 accepted/rejected |
+| 验证输入 Schema | A 使用 `RAW_SCHEMAS` 读取，B 的 `prepare()` 再检查必需列 |
+| 标准化列名 | B 的 `standardize_column_names()` |
+| 统一 timestamp / 类型 | B 的 dataset-specific transformer |
+| 应用专用转换规则 | B 的 `transform_dataset()` 和 `validate_dataset()` |
+| 重复、空主键、非法时间/数值 | B 的 `prepare()` 生成 accepted/rejected/metrics |
 | 存为 Delta | `ingest_dataset()` 写 `format("delta")` |
-| 生成 ingestion metadata | 记录 processed、rejected、耗时、schema version |
+| 生成 ingestion metadata | A 记录完整批次、行数、版本、耗时和状态 |
 
 ### 1. Which components are generic and reusable?
 
 通用部分包括：
 
 - 根据配置读取 CSV/Parquet；
-- 检查必需字段；
-- 将列名转为 `snake_case`；
+- 应用配置的读取格式、路径、参数和 raw Schema；
 - accepted/rejected 行数对账；
-- 写标准表、拒绝表和 metadata Delta 表；
+- 写标准表、拒绝表，读回校验后写 metadata Delta 表；
 - 统一 Spark 配置和运行入口。
 
 这些步骤不依赖某个数据集的业务含义，可以复用于新增数据集。
@@ -159,14 +159,14 @@ Taxi 和 Integrated 是大事实表，可能需要按时间分区；Weather、Zo
 
 ### 3. How are transformation rules defined and maintained?
 
-B 在 `src/transforms.py` 中用一个字典维护数据集与转换函数的关系：
+B 在 `src/dic_pipeline/transforms.py` 中用映射表维护转换函数：
 
 ```python
-TRANSFORMS = {
-    "taxi_trips": transform_taxi,
+TRANSFORMERS = {
+    "taxi": transform_taxi,
     "weather": transform_weather,
     "air_quality": transform_air_quality,
-    "taxi_zone_lookup": transform_zones,
+    "taxi_zones": transform_taxi_zones,
 }
 ```
 
@@ -175,30 +175,30 @@ TRANSFORMS = {
 
 ### 4. How are metadata managed?
 
-`data/delta/metadata/ingestion_runs` 是 Delta 表，每次成功摄入追加一行，包含：
+`data/delta/metadata/ingestion_runs` 是 Delta 表，每次摄入追加一行，包含：
 
-- dataset；
-- ingestion timestamp；
-- processed records；
-- rejected records；
-- execution time；
-- schema version。
+- `run_id`、dataset、开始/结束时间和总耗时；
+- raw input、scope excluded、input、accepted、rejected、duplicate 数量；
+- schema version 和 rule version；
+- success/failed 状态、错误数量、质量标记数量和失败信息。
 
-因此可以比较数据集规模、拒绝数量和执行时间，并追踪使用的 Schema 版本。
+四个数据集使用同一个 `run_id`。只有 standardized/rejected 写入并读回核对成功后，
+才记录 success，因此后续角色可以按批次和状态选择可用输入。
 
 ### 5. How does the design reduce duplication and maintenance?
 
 读取、Schema 检查、命名、对账、Delta 写入和 metadata 只实现一次。每个数据集
 只提供自己的配置和 transform，不需要复制整条 pipeline。输出路径和格式也集中在
-`configs/datasets.py`，避免散落硬编码。
+`configs/datasets.json`，避免散落硬编码。
 
 ### 6. What changes are needed for 20 new datasets?
 
 每个新数据集只需：
 
-1. 在 `DATASETS` 中增加路径、格式、必需字段和 reader options；
-2. 增加一个 dataset-specific transform；
-3. 将函数注册进 `TRANSFORMS`。
+1. 在 `configs/datasets.json` 中增加路径、格式、reader options 和版本；
+2. 在 `RAW_SCHEMAS` 中注册源 Schema；
+3. 增加 dataset-specific transform 和 validation rules，并注册进映射表。
 
-若新数据仍为 CSV 或 Parquet，通用框架无需修改；只有出现新的文件格式时才需要在
-`read_dataset()` 中增加对应 reader。
+若格式受 Spark DataFrameReader 支持（例如 CSV、Parquet、JSON），通用 reader
+无需修改，只需配置 `source_format`。只有需要第三方 connector 或特殊解码过程的
+格式，才需要增加专用读取适配；不需要为每个数据集单独创建 reader 文件。

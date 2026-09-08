@@ -90,25 +90,27 @@ cd DataIntensiveComputingLab
 
 ```text
 configs/
-  datasets.py             # 路径、格式、必需字段、输出位置
-src/
-  ingestion.py            # 通用读取、schema 检查、Delta 写入、metadata
-  transforms.py           # B 负责的数据集专用转换（待合并）
+  datasets.json                   # A/B 共用的数据源与规则配置
+src/dic_pipeline/
+  ingestion.py                    # A：读取、Delta 写入、读回校验、metadata
+  preparation.py                  # B：标准化与质量检查接口
 scripts/
-  run_ingestion.py        # 命令行运行入口
+  run_ingestion.py                # A：四数据集统一入口
+tests/
+  test_ingestion.py               # A：reader/writer/metadata 测试
 ```
 
 通用部分支持 CSV/Parquet、必需字段校验、`snake_case`、accepted/rejected
 对账、Delta 输出及摄入统计。数据集专用的 timestamp/type 转换、去重和质量规则由
-B 在 `src/transforms.py` 中实现。
+B 的 `prepare()` 实现，A 在写入后重新读取 Delta 并核对行数。
 
-B 的 `src/transforms.py` 合并后运行：
+完整运行命令（本机 16 GB 内存的已验证配置）：
 
 ```powershell
-.\.venv\python.exe -m scripts.run_ingestion --dataset all
-# 或只运行一个
-.\.venv\python.exe -m scripts.run_ingestion --dataset weather
+python -m scripts.run_ingestion --dataset all --driver-memory 6g --master "local[4]" --shuffle-partitions 128
 ```
 
-课程问题的书面回答见 `docs/role_a_task2_task3.md`；课程要求与详细分工见
-`Assignment.md` 和 `task_plan.md`。
+课程问题的书面回答见 `docs/role_a_task2_task3.md`，架构图见
+`docs/architecture.md`；课程要求与详细分工见 `Assignment.md` 和 `task_plan.md`。
+全量联调已使用同一 `run_id` 成功写入 Taxi 9,554,576、Weather 8,784、
+Air Quality 51,885 和 Taxi Zones 265 条标准记录。
