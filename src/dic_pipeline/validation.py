@@ -19,6 +19,11 @@ def _all(conditions: Sequence[Column]) -> Column:
     return reduce(and_, conditions, F.lit(True))
 
 
+def _nonfinite(column: Column) -> Column:
+    """Reject NaN and either infinity while preserving optional nulls."""
+    return F.isnan(column) | column.isin(float("inf"), float("-inf"))
+
+
 def _append_codes(df: DataFrame, output_column: str, rules: Sequence[Rule]) -> DataFrame:
     result = df.withColumn(output_column, F.array().cast("array<string>"))
     for code, condition in rules:
@@ -54,7 +59,7 @@ def _taxi_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], l
         "congestion_surcharge",
         "airport_fee",
     ]
-    invalid_numeric = _any([F.isnan(F.col(name)) for name in numeric_columns]) | (
+    invalid_numeric = _any([_nonfinite(F.col(name)) for name in numeric_columns]) | (
         F.col("trip_distance") < 0
     ) | (F.col("passenger_count") < 0)
     invalid_location = (~F.col("pickup_location_id").between(1, 265)) | (
@@ -95,7 +100,10 @@ def _taxi_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], l
 
 def _weather_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], list[Rule]]:
     del config
-    invalid_numeric = _any(
+    numeric_columns = (
+        "temp", "rhum", "prcp", "snwd", "wdir", "wspd", "wpgt", "pres", "cldc", "coco",
+    )
+    invalid_numeric = _any([_nonfinite(F.col(name)) for name in numeric_columns]) | _any(
         [
             ~F.col("rhum").between(0, 100),
             F.col("prcp") < 0,
@@ -140,11 +148,12 @@ def _air_quality_rules(
         ("missing_required_value", F.col("measurement_value").isNull()),
         (
             "invalid_numeric_value",
-            F.isnan(F.col("measurement_value")) | (F.col("measurement_value") < 0),
+            _nonfinite(F.col("measurement_value")) | (F.col("measurement_value") < 0),
         ),
         (
             "unexpected_parameter_or_unit",
             (F.col("parameter_code") != "88101")
+            | F.col("measurement_unit").isNull()
             | (F.col("measurement_unit") != "Micrograms/cubic meter (LC)"),
         ),
     ]
@@ -192,13 +201,14 @@ def validate_dataset(
 
 
 def mark_duplicate_rows(df: DataFrame, key_columns: Sequence[str]) -> DataFrame:
-    """Keep one deterministic representative and reject later rows for the same key."""
+    """Prefer a valid row, then break ties deterministically for each key."""
     missing = sorted(set(key_columns) - set(df.columns))
     if missing:
         raise ValueError(f"Duplicate-key columns are missing after transformation: {missing}")
 
     valid_key = _all([F.col(name).isNotNull() for name in key_columns])
     order_columns = [
+        (F.size("error_reasons") > 0).cast("int"),
         F.coalesce(F.col("source_file"), F.lit("")),
         F.coalesce(F.col("raw_record_json"), F.lit("")),
     ]

@@ -7,10 +7,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from src.dic_pipeline.ingestion import create_spark, ingest_dataset
-
-
-DATASETS = ("taxi", "weather", "air_quality", "taxi_zones")
+from src.dic_pipeline.ingestion import DATASETS, create_spark, ingest_batch, ingest_dataset
 
 
 def main() -> None:
@@ -28,7 +25,6 @@ def main() -> None:
     parser.add_argument("--shuffle-partitions", type=int, default=128)
     args = parser.parse_args()
 
-    datasets = DATASETS if args.dataset == "all" else (args.dataset,)
     run_id = args.run_id or str(uuid4())
     spark = create_spark(
         master=args.master,
@@ -37,14 +33,12 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
     try:
-        for dataset in datasets:
-            record = ingest_dataset(
-                spark,
-                dataset,
-                data_dir=args.data_dir,
-                delta_root=args.output_root,
-                run_id=run_id,
-            )
+        options = dict(data_dir=args.data_dir, delta_root=args.output_root, run_id=run_id)
+        if args.dataset == "all":
+            records = ingest_batch(spark, **options)
+        else:
+            records = [ingest_dataset(spark, args.dataset, **options)]
+        for record in records:
             print(json.dumps(record, default=str, sort_keys=True))
     finally:
         spark.stop()

@@ -98,10 +98,11 @@ def prepare(
 
     scoped, raw_input_count = _apply_scope(df, dataset, dataset_config)
     audited = _attach_audit_columns(scoped, current_run_id, dataset_config)
-    transformed = transform_dataset(audited, dataset, dataset_config)
-    classified = validate_dataset(transformed, dataset, dataset_config)
-    classified = mark_duplicate_rows(classified, dataset_config["duplicate_key"])
-    classified.persist(StorageLevel.MEMORY_AND_DISK)
+    transformed = transform_dataset(audited, dataset, dataset_config) #统一列名和时间，生成行程时长、关联用的小时字段等
+    classified = validate_dataset(transformed, dataset, dataset_config) #检查时间倒序、非法数值、缺失关键字段等，记录错误原因
+    classified = mark_duplicate_rows(classified, dataset_config["duplicate_key"]) #按各数据集的业务键识别重复记录
+    # Full Taxi rows include raw JSON; keep the shared cache off the JVM heap.
+    classified.persist(StorageLevel.DISK_ONLY)
 
     in_scope_input_count = classified.count()
     error_counts = _count_codes(classified, "error_reasons")
