@@ -112,7 +112,7 @@ def transform_weather(df: DataFrame, config: Mapping[str, Any]) -> DataFrame:
     result = (
         result.withColumn(
             "weather_timestamp_source",
-            F.to_timestamp(source_text, "yyyy-MM-dd HH:mm:ss"),
+            F.try_to_timestamp(source_text, F.lit("yyyy-MM-dd HH:mm:ss")),
         )
         .withColumn(
             "weather_hour_utc",
@@ -139,16 +139,16 @@ def transform_air_quality(df: DataFrame, config: Mapping[str, Any]) -> DataFrame
         .withColumnRenamed("units_of_measure", "measurement_unit")
         .withColumn(
             "air_quality_hour_utc",
-            F.to_timestamp(
+            F.try_to_timestamp(
                 F.concat_ws(" ", F.col("date_gmt"), F.col("time_gmt")),
-                "yyyy-MM-dd HH:mm",
+                F.lit("yyyy-MM-dd HH:mm"),
             ),
         )
         .withColumn(
             "local_standard_timestamp_source",
-            F.to_timestamp(
+            F.try_to_timestamp(
                 F.concat_ws(" ", F.col("date_local"), F.col("time_local")),
-                "yyyy-MM-dd HH:mm",
+                F.lit("yyyy-MM-dd HH:mm"),
             ),
         )
         .withColumn("state_code", F.lpad(F.col("state_code").cast("string"), 2, "0"))

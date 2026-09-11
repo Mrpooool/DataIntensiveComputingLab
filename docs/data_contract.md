@@ -40,7 +40,8 @@ written to the rejected table.
 - `source_file` and `run_id` provide lineage.
 - Rejected rows retain `raw_record_json` and an array of `error_reasons`.
 - Suspicious but potentially legitimate values use `quality_flags` and remain accepted.
-- Duplicate detection is deterministic and rejects every occurrence after the selected first row.
+- Duplicate detection prefers a row without validation errors, then sorts by source file and raw JSON.
+- Rule version `1.0.1` rejects malformed required timestamps, missing Air units and NaN/Infinity measurements.
 - The Taxi fingerprint covers all 19 business source fields and excludes file path, run ID and
   derived environmental fields, preventing merely similar trips from being collapsed.
 
@@ -75,9 +76,9 @@ written to the rejected table.
 - Unparseable timestamps.
 - Taxi pickup outside the supplied Jan-March 2024 source period.
 - Taxi dropoff earlier than pickup.
-- Negative trip distance, negative passenger count, NaN numeric values, or invalid zone IDs.
+- Negative trip distance, negative passenger count, NaN/Infinity numeric values, or invalid zone IDs.
 - Weather values outside defined physical/code domains.
-- Missing Air measurement, negative/NaN measurement, or unexpected parameter/unit.
+- Missing Air measurement, negative/NaN/Infinity measurement, or unexpected parameter/unit.
 - Duplicate standardized business keys.
 
 ## Non-rejecting quality flags
@@ -96,7 +97,22 @@ recomputing them.
 - Join Taxi Zones twice using pickup and dropoff location IDs.
 - Verify the right-hand Zone key is unique before joining.
 - Weather is already one row per UTC hour.
-- Air remains one row per monitor-hour. C should first compute a robust city background value
-  (the agreed design uses the median of the six available site-hour measurements) so the right
-  side has at most one row per `air_quality_hour_utc`.
+- Air aggregation accepts the verified PM2.5 LC unit and FEM method 636; other signatures require review.
+- First take the median per site/hour, then the median across available sites per hour.
+  Do not hard-code six sites; retain `air_quality_site_count` and flagged-observation counts.
+- Match environment hours only for pickups in NYC's five boroughs; preserve other trips with null environment values.
+- Weather is assumed to describe NYC in UTC; the source provides no location/timezone metadata.
+- Report overall and NYC-scope hour match rates separately from non-null measurement counts.
+- The integrated table retains Taxi fields, adds `weather_*` metrics and source flags, and
+  `air_quality_pm25` in Micrograms/cubic meter (LC). Missing observations are not filled.
 - Use left joins and verify the integrated row count equals accepted Taxi row count.
+
+## Transformation inventory
+
+- All datasets: normalize names to snake_case (reject collisions); retain source types from `schemas.py` for CSV and the Parquet schema for Taxi. Add source file, run/schema/rule versions, quality flags and a record key. Required source columns are checked before transformation.
+- Taxi: rename both pickup/dropoff timestamps to `*_timestamp_source`, and PU/DO IDs to `pickup_location_id`/`dropoff_location_id`. Convert both times from New York to UTC; derive UTC pickup hour, New York pickup date and duration in seconds. Other business values remain unchanged. The fingerprint formats numeric measurements to six decimal places; distinctions below that precision are not retained in the key.
+- Weather: combine year/month/day/hour into a source timestamp, convert using configured timezone, then hash the UTC hour. Keep all ten measurements and their source labels unchanged; no unit conversion or missing-value filling is performed. Units are not independently verified from this file's metadata.
+- Air: filter the configured state/counties before quality checks; rename sample measurement and units. Parse GMT and local-standard date/time pairs separately. Zero-pad state/county/site codes to 2/3/4 characters; cast parameter/method codes to strings. Trim qualifiers and turn empty qualifiers into null. Build site/monitor IDs and hash the documented compound key. Preserve remaining fields, including source date strings and last-change text.
+- Zones: normalize `LocationID` to `location_id`; trim borough/zone/service-zone text. Set all three labels to `Unknown` for 264 and `Outside of NYC` for 265. Hash the location ID.
+- Classification: apply the rejection/flag rules above, rank duplicates by validity then source file/raw JSON, retain one valid representative where available. Accepted output drops raw JSON and error reasons; rejected output retains both. Optional null measurements stay null.
+- Integration: prefix weather fields, compute the two-level Air median and site/flag counts, add pickup/dropoff labels, scope and match flags. Preserve accepted Taxi rows and leave unavailable environmental values null, as specified above.
