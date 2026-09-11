@@ -1,6 +1,5 @@
 # Urban data integration platform
 
-[中文说明](README-zh.md)
 
 Week 1 course project: ingest and clean Taxi Trips, Weather, Air Quality and Taxi Zones with PySpark, store them as Delta tables, and enrich each accepted taxi trip with hourly weather, PM2.5, pickup and dropoff zones, and boroughs.
 
@@ -77,4 +76,3 @@ The September 9, 2026 run passed all 27 small-fixture tests. Separate full-data 
 - [Data catalog](docs/data_catalog.md) and [data contract](docs/data_contract.md), including time assumptions and missing-data rules.
 - [Pipeline code](src/dic_pipeline/), [run scripts](scripts/) and [tests](tests/).
 
-See the [Chinese README](README-zh.md) for detailed run results and additional setup notes.
