@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pyspark
 from delta import configure_spark_with_delta_pip
+from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
     DoubleType,
@@ -29,6 +30,7 @@ from .schemas import RAW_SCHEMAS
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 DEFAULT_DELTA_ROOT = PROJECT_ROOT / "data" / "delta"
+DATASETS = ("taxi", "weather", "air_quality", "taxi_zones")
 
 METADATA_SCHEMA = StructType(
     [
@@ -54,7 +56,7 @@ METADATA_SCHEMA = StructType(
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc)
 
 
 def create_spark(
@@ -114,6 +116,8 @@ def read_source(
         reader = reader.schema(schema)
     for key, value in config.get("reader_options", {}).items():
         reader = reader.option(str(key), str(value))
+    if config["source_format"] == "csv":
+        reader = reader.option("enforceSchema", "false")
     source_pattern = str(config["source_path"])
     if any(character in source_pattern for character in "*?["):
         source_paths = sorted(Path(data_dir).glob(source_pattern))
@@ -209,6 +213,8 @@ def ingest_dataset(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Read, prepare, write, verify and record one dataset."""
+    # A single-table rerun also invalidates the previous complete handoff.
+    (Path(delta_root) / "metadata" / "completed_batch.json").unlink(missing_ok=True)
     current_run_id = run_id or str(uuid4())
     started_at = _utc_now()
     started = perf_counter()
@@ -269,3 +275,52 @@ def ingest_dataset(
     finally:
         if result is not None:
             result.release()
+
+
+def ingest_batch(
+    spark: SparkSession,
+    *,
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+    delta_root: str | Path = DEFAULT_DELTA_ROOT,
+    run_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Publish a handoff only after all four datasets succeed (one writer at a time)."""
+    current_run_id = run_id or str(uuid4())
+    records = []
+    versions = {}
+    for dataset in DATASETS:
+        record = ingest_dataset(
+            spark, dataset, data_dir=data_dir, delta_root=delta_root,
+            run_id=current_run_id,
+        )
+        records.append(record)
+        path = Path(delta_root) / "standardized" / dataset
+        versions[dataset] = DeltaTable.forPath(spark, str(path)).history(1).first()["version"]
+
+    manifest = Path(delta_root) / "metadata" / "completed_batch.json"
+    pending = manifest.with_suffix(".tmp")
+    pending.write_text(
+        json.dumps({"run_id": current_run_id, "versions": versions}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    pending.replace(manifest)
+    return records
+
+
+def read_completed_batch(
+    spark: SparkSession,
+    delta_root: str | Path = DEFAULT_DELTA_ROOT,
+) -> dict[str, DataFrame]:
+    """Load the exact four Delta versions published by a successful full ingestion."""
+    manifest = Path(delta_root) / "metadata" / "completed_batch.json"
+    if not manifest.exists():
+        raise RuntimeError("No completed batch. Run ingestion with --dataset all first.")
+    batch = json.loads(manifest.read_text(encoding="utf-8"))
+    if set(batch["versions"]) != set(DATASETS):
+        raise ValueError("Completed batch must contain all four datasets.")
+    return {
+        dataset: spark.read.format("delta")
+        .option("versionAsOf", batch["versions"][dataset])
+        .load(str(Path(delta_root) / "standardized" / dataset))
+        for dataset in DATASETS
+    }

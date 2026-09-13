@@ -34,3 +34,7 @@
 - [EPA hourly 格式](https://aqs.epa.gov/aqsweb/airdata/FileFormats.html)说明 GMT、本地标准时、POC、单位和质量标记；实际课程 Air 字段仍以解包结果为准。
 - Spark 4.2 支持 `mode(..., deterministic=True)` 处理并列众数；[ANSI 模式默认开启](https://spark.apache.org/docs/4.2.0/sql-migration-guide.html)，校验需显式处理非法类型与时间转换。
 - [Meteostat 数据来源](https://dev.meteostat.net/data/bulk/hourly)含模型替代数据；[小时 API](https://dev.meteostat.net/api/stations/hourly)允许指定时区/单位，因此不能凭字段名断言本文件使用默认参数。
+
+## 2026-09-09 更新
+
+上述 9 月 6 日的尚未读取/验证为历史状态；四表摄入与整合已完成全量验证，详见数据目录和 progress.md。Task 6 使用 Delta detail 的 numFiles/sizeInBytes 统计当前有效文件，避免把 CRC、日志和旧版本文件算入布局大小。

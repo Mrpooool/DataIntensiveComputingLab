@@ -1,10 +1,10 @@
 # W1 执行方案
 
-依据：[课程要求](Assignment.md)；[审核记录](findings.md)。范围仅为 W1，当前尚未实现平台。
+依据：[课程要求](Assignment.md)；[审核记录](findings.md)。范围仅为 W1；摄入与关联已通过全量验证，当前推进性能实验与最终审核。
 
 ## 1. 统一决策
 
-- 一个 Python + PySpark + Delta 项目。统一采用 Python 3.11.9、JDK 21、PySpark 4.2.0、delta-spark 4.4.0；已固定本机安装的直接及间接依赖，`pip check` 通过。A 下一步验证 Delta 写入、读回与查询。
+- 一个 Python + PySpark + Delta 项目。统一采用 Python 3.11.9、JDK 21、PySpark 4.2.0、delta-spark 4.4.0；已固定本机安装的直接及间接依赖，`pip check` 通过。四表 Delta 写入、读回与关联已通过全量验证。
 - 四份原始数据 → 通用导入 → 四张标准 Delta 表 → 小时环境关联 → `integrated_taxi_trips`。
 - 配置集中管理路径与规则；用普通函数和数据集处理函数映射表组织代码。
 - W1 采用全量批处理；重复运行替换指定输出，不累计追加。成功记录在所有输出校验后写入；失败运行不得作为 W2 输入。
@@ -12,7 +12,7 @@
 | 表 | 初始布局 |
 | --- | --- |
 | Taxi 标准表 | 不分区；另建按 `pickup_date` 分区的实验副本 |
-| Weather、Air Quality、Zone 标准表 | 不分区；保留有效源数据，地域筛选在关联阶段执行 |
+| Weather、Air Quality、Zone 标准表 | 不分区；Air 标准表由 B 保留纽约五区记录，全国原始文件保留 |
 | 整合表 | 保留纽约当地 `pickup_date`，初始按天分区；检查实际文件大小后调整并记录 |
 | rejected、运行统计 | 小表不分区 |
 
@@ -40,9 +40,9 @@ A 管 `io/ingestion/cli`，B 管 `schemas/transforms/validation`，C 管 `integr
 | --- | --- | --- |
 | B → A | `prepare(df, dataset_config)` | accepted、rejected、metrics |
 | A → C | 四张同一成功批次的标准 Delta 表 | 配置中的路径、Schema 版本 |
-| C → A | `integrate(taxi, weather, air, zones, config)` | 整合 DataFrame、匹配统计；A 的公共 writer 落盘 |
+| C → A | `integrate(taxi, weather, air, zones)` | 整合 DataFrame、匹配统计；A 的公共 writer 落盘 |
 
-`contracts.md` 只保留必要字段表：原始列 → 标准列、类型、单位、空值、粒度、唯一键、转换规则、关联字段和来源假设。
+`docs/data_contract.md` 保留字段契约：原始列 → 标准列、类型、单位、空值、粒度、唯一键、转换规则、关联字段和来源假设。
 - Taxi 至少包含稳定记录键、上下车时间/地点、距离、车费、`pickup_date`、`pickup_hour_utc`、`trip_duration_seconds`；具体源列以 Parquet 为准。
 - 无业务主键时采用固定字段序列的稳定指纹；排除批次号、文件路径和环境字段。承认“完全相同记录视为重复”的业务局限，固定指纹规则版本。
 - 成功批次满足：输入数 = accepted 数 + rejected 数。重复丢弃计入 rejected，另记 duplicate 数；一条记录多个错误仍只计一条。
@@ -54,7 +54,7 @@ A 管 `io/ingestion/cli`，B 管 `schemas/transforms/validation`，C 管 `integr
 - Spark 会话设 UTC，显式固定 `spark.sql.ansi.enabled=true`；非法转换须记录拒绝原因。存储 UTC 时间戳，日期分析使用 `America/New_York`。Taxi 无时区值暂按纽约当地时间，Weather 暂按 UTC；B 保留原始时间并做跨日、夏令时样例核验。
 - 若 Air 是 EPA hourly 格式，优先用 `Date GMT + Time GMT`；Local Standard Time 不可直接按纽约夏令时转换。真实格式、单位及质量标记必须在①确认。
 - 当前 Weather 每小时一行，直接使用；不虚构站点，不把 `*_source` 当站点列。保留来源标记；`snwd/wpgt` 全空，`prcp/coco` 可空。
-- Air 先选纽约五区适用站点；仅合并同污染物、统一单位、相容测量口径的数据。按监测器/站点处理重复，再形成站点小时值，最后对站点小时值取 median；各污染物分列，使每小时最多一行。
+- Air 使用 B 已筛选的纽约五区站点；仅合并同污染物、统一单位、相容测量口径的数据。按监测器/站点处理重复，再形成站点小时值，最后对站点小时值取 median；各污染物分列，使每小时最多一行。
 - 如果未来 Weather 出现多站点，标量可取 median；天气类别用 `mode(..., deterministic=True)`，并列取最小代码。风向、累计降水需专门规则，不能一律取 median。
 - 对 `pickup_hour_utc` 做同小时左连接；Zone 用上下车 ID 分别左连接。先检查所有右表关联键唯一，禁止关联后再去重掩盖行数膨胀。
 - 纽约环境仅用于上车点属于纽约五区的行程；域外/未知地点及缺测仍保留 Taxi，环境列为 null。说明区域背景值的空间局限。
@@ -73,7 +73,7 @@ S0/S1 使用同一份 Taxi、同一清洗逻辑与列，仅改变是否按 `pick
 | 各 borough 平均车费 | 同样的 pickup borough；平均 fare_amount，不替换为 total_amount |
 | 辅助日期范围查询 | 可加固定日期区间并检查分区裁剪，不替代上述三个查询 |
 
-- 同一机器、资源、Spark 配置、压缩与缓存策略；同一输入清单。每轮写入新实验目录，导入计时覆盖 raw 读取、转换/校验到 Delta 提交完成。
+- 同一机器、资源、Spark 配置、压缩与缓存策略；同一输入清单。每轮写入新实验目录；S0/S1 均使用 coalesce(8)，仅 S1 添加日期分区。导入各测两次，顺序反转；计时覆盖 raw 读取、转换/校验和 accepted/rejected Delta 提交，不含读回验证。
 - 查询预热一次后各测三次，交替 S0/S1 顺序，保留原始耗时和中位数；使用 `collect()` 完整计算这些小型聚合结果，不能只对结果 `count()`。
 - 不缓存 Taxi 查询输入；记录 OS 缓存不可控，不能声称是冷缓存实验。AQE 等设置保持相同，W2 再单独研究。
 - 记录导入时间、查询时间、当前 Delta 快照的数据字节数与文件数；历史废文件、日志另计，不能混入布局比较。

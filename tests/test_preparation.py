@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from pyspark.sql import SparkSession
@@ -117,6 +117,7 @@ class PreparationTests(unittest.TestCase):
             .appName("dic-role-b-tests")
             .config("spark.ui.enabled", "false")
             .config("spark.sql.session.timeZone", "UTC")
+            .config("spark.sql.ansi.enabled", "true")
             .config("spark.sql.shuffle.partitions", "2")
             .getOrCreate()
         )
@@ -155,6 +156,60 @@ class PreparationTests(unittest.TestCase):
         }
         self.assertIn("duplicate_record", reasons)
         self.assertIn("dropoff_before_pickup", reasons)
+
+    def test_nonfinite_measurements_are_rejected(self):
+        cases = [
+            ("taxi", TAXI_RAW_SCHEMA, [
+                taxi_row(), taxi_row(fare_amount=float("inf")),
+                taxi_row(fare_amount=float("-inf")),
+            ]),
+            ("weather", WEATHER_RAW_SCHEMA, [
+                weather_row(), weather_row(hour=18, temp=float("inf")),
+                weather_row(hour=19, temp=float("-inf")),
+                weather_row(hour=20, cldc=-(2**31)),
+            ]),
+            ("air_quality", AIR_QUALITY_RAW_SCHEMA, [
+                air_row(), air_row(**{"POC": 5, "Sample Measurement": float("inf")}),
+                air_row(**{"POC": 6, "Sample Measurement": float("-inf")}),
+            ]),
+        ]
+        for dataset, schema, rows in cases:
+            with self.subTest(dataset=dataset):
+                result = prepare(self.spark.createDataFrame(rows, schema), load_dataset_config(dataset))
+                try:
+                    # Each case contains one valid row; every other row has an invalid number.
+                    self.assertEqual(result.metrics["accepted_count"], 1)
+                    self.assertEqual(result.metrics["rejected_count"], len(rows) - 1)
+                    self.assertEqual(result.metrics["error_counts"]["invalid_numeric_value"], len(rows) - 1)
+                finally:
+                    result.release()
+
+    def test_taxi_local_date_and_spring_dst_duration(self):
+        from pyspark.sql import functions as F
+
+        # Explicit UTC values encode the intended naive Parquet wall-clock fields,
+        # independently of the Python process's local timezone.
+        rows = [
+            taxi_row(
+                tpep_pickup_datetime=datetime(2024, 1, 31, 23, 55, tzinfo=timezone.utc),
+                tpep_dropoff_datetime=datetime(2024, 2, 1, 0, 5, tzinfo=timezone.utc),
+            ),
+            taxi_row(
+                tpep_pickup_datetime=datetime(2024, 3, 10, 1, 55, tzinfo=timezone.utc),
+                tpep_dropoff_datetime=datetime(2024, 3, 10, 3, 5, tzinfo=timezone.utc),
+            ),
+        ]
+        result = prepare(self.spark.createDataFrame(rows, TAXI_RAW_SCHEMA), load_dataset_config("taxi"))
+        self.addCleanup(result.release)
+        actual = result.accepted.orderBy("pickup_timestamp_utc").select(
+            F.col("pickup_date").cast("string"),
+            F.date_format("pickup_hour_utc", "yyyy-MM-dd HH:mm:ss"),
+            "trip_duration_seconds",
+        ).collect()
+        self.assertEqual([tuple(row) for row in actual], [
+            ("2024-01-31", "2024-02-01 04:00:00", 600),
+            ("2024-03-10", "2024-03-10 06:00:00", 600),
+        ])
 
     def test_taxi_fingerprint_does_not_collapse_distinct_payment_details(self):
         rows = [taxi_row(), taxi_row(payment_type=2, tip_amount=0.0, total_amount=16.5)]
@@ -196,6 +251,47 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(result.metrics["accepted_count"], 1)
         accepted = result.accepted.first()
         self.assertEqual(accepted["site_id"], "36-061-0079")
+
+    def test_malformed_environment_dates_are_rejected_under_ansi(self):
+        cases = [
+            ("weather", WEATHER_RAW_SCHEMA, [weather_row(), weather_row(month=13)]),
+            ("air_quality", AIR_QUALITY_RAW_SCHEMA,
+             [air_row(), air_row(**{"Date GMT": "2024-13-15"})]),
+        ]
+        for dataset, schema, rows in cases:
+            with self.subTest(dataset=dataset):
+                result = prepare(self.spark.createDataFrame(rows, schema), load_dataset_config(dataset))
+                self.addCleanup(result.release)
+                self.assertEqual(result.metrics["accepted_count"], 1)
+                self.assertEqual(result.metrics["rejected_count"], 1)
+                self.assertIn("invalid_timestamp", result.rejected.first()["error_reasons"])
+
+    def test_duplicate_prefers_valid_weather_observation(self):
+        frame = self.spark.createDataFrame(
+            [weather_row(rhum=101.0), weather_row()], WEATHER_RAW_SCHEMA,
+        )
+        result = prepare(frame, load_dataset_config("weather"))
+        self.addCleanup(result.release)
+        self.assertEqual(result.metrics["accepted_count"], 1)
+        self.assertEqual(result.accepted.first()["rhum"], 60.0)
+        self.assertEqual(result.metrics["rejected_count"], 1)
+        self.assertEqual(result.metrics["duplicate_count"], 1)
+
+    def test_weather_nan_and_missing_air_unit_are_rejected(self):
+        cases = [
+            ("weather", WEATHER_RAW_SCHEMA, [weather_row(), weather_row(hour=18, temp=float("nan"))],
+             "invalid_numeric_value"),
+            ("air_quality", AIR_QUALITY_RAW_SCHEMA,
+             [air_row(), air_row(**{"Time GMT": "18:00", "Units of Measure": None})],
+             "unexpected_parameter_or_unit"),
+        ]
+        for dataset, schema, rows, reason in cases:
+            with self.subTest(dataset=dataset):
+                result = prepare(self.spark.createDataFrame(rows, schema), load_dataset_config(dataset))
+                self.addCleanup(result.release)
+                self.assertEqual(result.metrics["accepted_count"], 1)
+                self.assertEqual(result.metrics["rejected_count"], 1)
+                self.assertIn(reason, result.rejected.first()["error_reasons"])
 
     def test_zone_special_rows_are_normalized_and_retained(self):
         rows = [

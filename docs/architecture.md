@@ -24,6 +24,6 @@ flowchart TB
     DeltaWrite --> Metadata
     Standardized --> Integration
     Integration --> Integrated
-    Standardized --> Layouts
+    Raw -->|same Taxi preparation| Layouts
     Layouts --> Benchmark
 ```

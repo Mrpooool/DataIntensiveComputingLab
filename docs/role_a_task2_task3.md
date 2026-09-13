@@ -21,8 +21,8 @@ data/
     integrated/
       integrated_taxi_trips/
   benchmark/
-    taxi_unpartitioned/
-    taxi_partitioned_by_pickup_date/
+    <run_id>/round_<n>/S0/taxi/
+    <run_id>/round_<n>/S1/taxi/
 ```
 
 - `raw` stores the original CSV and Parquet files without modifying them.
@@ -90,8 +90,8 @@ The current implementation generates:
 
 Task 6 uses the following two Taxi strategies:
 
-1. `data/benchmark/taxi_unpartitioned`: no partitioning;
-2. `data/benchmark/taxi_partitioned_by_pickup_date`: partitioned by
+1. `data/benchmark/<run_id>/round_<n>/S0/taxi`: no partitioning;
+2. `data/benchmark/<run_id>/round_<n>/S1/taxi`: partitioned by
    `pickup_date`.
 
 The two experimental tables must use the same data, schema, columns, and
@@ -162,8 +162,8 @@ data read through partition pruning.
   because the total volume increased.
 - If multiple years or nationwide Air Quality data are retained, consider
   `year/month` partitioning when date-filtered queries are common.
-- Use `--output-root` to switch to HDFS or object storage and configure the
-  corresponding Spark connector.
+- HDFS/object storage would require URI-aware path handling and the appropriate
+  connector; the current CLI uses local filesystem paths.
 
 # Task 3: Build a Generic Ingestion Framework
 
@@ -301,6 +301,7 @@ Each new dataset requires:
 3. A dataset-specific transformer registered in `TRANSFORMERS`.
 4. Dataset-specific validation rules registered in `RULE_BUILDERS`.
 5. Tests for representative valid records and important boundary cases.
+6. Register the dataset in `ingestion.DATASETS` for CLI/batch selection; define any new integration rules separately.
 
 If Spark DataFrameReader already supports the format, such as CSV, Parquet,
 JSON, or ORC, only `source_format` needs to be configured; no separate reader

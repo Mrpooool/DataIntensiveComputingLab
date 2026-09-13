@@ -5,7 +5,7 @@
     "source_format": "parquet",
     "output_files": 8,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.0",
+    "rule_version": "1.0.1",
     "source_timezone": "America/New_York",
     "valid_pickup_start_utc": "2024-01-01 05:00:00",
     "valid_pickup_end_utc_exclusive": "2024-04-01 04:00:00",
@@ -18,7 +18,7 @@
     "reader_options": {"header": "true"},
     "output_files": 1,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.0",
+    "rule_version": "1.0.1",
     "source_timezone": "UTC",
     "duplicate_key": ["weather_hour_utc"]
   },
@@ -29,7 +29,7 @@
     "reader_options": {"header": "true"},
     "output_files": 1,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.0",
+    "rule_version": "1.0.1",
     "scope_state": "New York",
     "scope_counties": ["Bronx", "Kings", "New York", "Queens", "Richmond"],
     "duplicate_key": [
@@ -49,7 +49,7 @@
     "reader_options": {"header": "true"},
     "output_files": 1,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.0",
+    "rule_version": "1.0.1",
     "duplicate_key": ["location_id"]
   }
 }
