@@ -1,0 +1,31 @@
+{
+  "source_view": "integrated_taxi_trips",
+  "analysis_timezone": "America/New_York",
+  "notes": {
+    "weather_category": "Use raw weather_coco until role B freezes a label mapping.",
+    "pm25_bins": "Air-quality product keeps hourly PM2.5 values; bin edges are owned by role B.",
+    "zero_demand_hours": "W2 products do not invent zero-demand hours; Q3-Q5 padding stays with role B."
+  },
+  "products": {
+    "daily_mobility_summary": {
+      "schema_version": "1.0.0",
+      "output_files": 1,
+      "keys": ["pickup_hour_utc"]
+    },
+    "taxi_zone_statistics": {
+      "schema_version": "1.0.0",
+      "output_files": 1,
+      "keys": ["local_pickup_month", "pickup_location_id"]
+    },
+    "weather_impact_summary": {
+      "schema_version": "1.0.0",
+      "output_files": 1,
+      "keys": ["pickup_location_id", "weather_category"]
+    },
+    "air_quality_impact_summary": {
+      "schema_version": "1.0.0",
+      "output_files": 1,
+      "keys": ["pickup_hour_utc"]
+    }
+  }
+}
