@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品与 B 分析查询均已合并进 `main`。审查确认的五项 A/B 问题已修复，C 的四类优化实验与 benchmark report 已完成，全部在分支 `c/pipeline-fixes` 上尚未合并回 `main`。剩余：W2 完整设计报告与提交包。详见 [task_plan.md](task_plan.md)。
+截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品（PR #4）与 B 分析查询（PR #5）已在 `main`。审查确认的五项 A/B 问题已修复，C 的 13 项优化实验、benchmark report 和优化策略说明已完成，均在 `c/pipeline-fixes`（已推送到远端，尚未提 PR）。剩余：W2 完整设计报告与提交包。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -171,6 +171,8 @@
 1. 合并 `c/pipeline-fixes` 回 `main`（无冲突预期：`main` 自 `758dc73` 后无新提交）。
 2. C：在此基线上搭 `query_benchmark.py`，先做 Q1/Q2/Q6 的缓存与 AQE 对照，再做 Q3–Q5、分区裁剪、广播连接，并把“产品 vs 基础 SQL”的全量等价核对纳入实验框架。
 
+> 第 1 条的前提已过期：`main` 在那之后前进到 `abf5b0f`，B 的 PR #5 把同一个 `173a541` 合进了 main。两次合并的是同一个提交，内容不重复，虚拟合并无冲突。第 2 条已执行完毕，见下一节。
+
 ## 2026-09-19 W2 优化实验（C）
 
 分支 `c/pipeline-fixes`。框架提交 `0e71253`，全量实验运行 ID `20260919T143454Z-9d921a51`。
@@ -218,7 +220,23 @@
 - [优化策略与权衡](docs/w2_design_optimization.md)：C 在设计报告中负责的一节，待 A 整合进完整 3–5 页文档。
 - 运行产物 `data/benchmark/w2/20260919T143454Z-9d921a51/`（results.json、sql/、plans/），不纳入 Git。
 
+### 文档更新（`1cab797`）
+
+两个 README 重写：开头不再自称 W1 课程项目；运行命令按“W1 建平台 / W2 读它发布的快照”分组；删掉两处死链（`docs/w1_design_report.pdf`、`docs/role_a_task2_task3.md`，两个文件都不存在）；测试历史压成一句；角色表更新。中文 README 的“Task 6 实验口径”压缩成指向 W1 报告的一句，因为那 5 条方法与报告的 Method 一节重复；结果表保留，最终复测 `20260909T144949Z-b493da9f` 的数字在 Git 里没有第二处记录（`docs/benchmark_report.md` 记的是更早的 `ce81d328`，本文件只有运行 ID）。腾出的篇幅补了中文 README 原本完全没有的 W2 实验结果。
+
+### 最终验证
+
+改动涉及共享模块 `queries.py`（抽出 `render_template`，新增 `pickup_date_filter` / `views` 参数），按 `AGENTS.md` 跑完整回归：**55 项 OK，960.2 秒**。B 的六个查询全部照常。`git diff --check` 通过。
+
+### 当前分支与远端状态
+
+- `c/pipeline-fixes` = `1cab797`，已推送，`origin/c/pipeline-fixes` 与本地一致。
+- `origin/main` = `abf5b0f`：B 的 PR #5 合并了 `173a541`，与我们在 `758dc73` 合的是同一个提交，内容不重复。
+- 虚拟合并测试（`git merge-tree`）通过，无冲突；merge base 为 `173a541`，净改动 36 个文件、+2635/-284，全部是我们自己的工作。
+- PR 尚未创建：https://github.com/Mrpooool/DataIntensiveComputingLab/compare/main...c/pipeline-fixes
+
 ### 未完成
 
+- 提 PR，并知会 A/B 接口变更。B：Q3-Q5 日历规则改变、`render_query` 新增参数。A：两张环境产品的范围与标签改变、`schema_version` 升到 1.1.0、`run_integration` 现在发布快照、`requirements.txt` 新增 `tzdata` 需重装依赖。
 - W2 完整设计报告（A 整合 + B 的查询/产品设计说明）、提交包。
 - 组合优化（先做的是单因素独立对照）；十城扩展的建议是基于数据形状的外推，非实测。
