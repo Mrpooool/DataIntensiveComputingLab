@@ -93,6 +93,8 @@ The September 9, 2026 Week 1 run passed 27 small-fixture tests; the September 18
 
 - [Design report](docs/w1_design_report.md) and [4-page PDF](docs/w1_design_report.pdf) (before the latest wording edits).
 - [Architecture diagram](docs/architecture.md).
-- [Benchmark report](docs/benchmark_report.md) and [raw timings](docs/benchmark_timings.csv), covering the first experiment.
+- [Week 1 benchmark report](docs/benchmark_report.md) and [raw timings](docs/benchmark_timings.csv), covering the first experiment.
+- [Week 2 benchmark report](docs/w2_benchmark_report.md) and [raw timings](docs/w2_benchmark_timings.csv), covering the thirteen optimization experiments.
+- [Week 2 optimization strategy and trade-offs](docs/w2_design_optimization.md), role C's section of the Week 2 design report.
 - [Data catalog](docs/data_catalog.md) and [data contract](docs/data_contract.md), including time assumptions and missing-data rules.
 - [Pipeline code](src/dic_pipeline/), [run scripts](scripts/) and [tests](tests/).
