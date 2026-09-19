@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-15：W1 开发、验证与提交包已完成；W2 分工和执行方案已确定，尚未开始实现。详细安排见 [task_plan.md](task_plan.md)。
+截至 2026-09-19：W1 已交付代码包；W2 的 A 产品代码已合并，B 查询代码在远端分支。A/B 主体实现已完成，但审查发现待修问题，尚未验收；C 优化实验未开始。详见本文末交接记录及 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -71,3 +71,50 @@
 
 
 公共：源=`integrated_taxi_trips`（钉在 `completed_integration.json`）；分析时区 `America/New_York`，小时键 UTC；全量覆盖刷新；行上元数据 `data_source` / version / created/refreshed / `schema_version`。B 可用 `--builders-module` 覆盖。W2 不做：零订单补齐、天气语义标签、PM2.5 分箱、增量刷新。
+
+## 2026-09-19 审查交接：W2-REVIEW-20260919
+
+### 目标、版本与授权
+
+- 工作目录：`D:\Tools\Coding\DataIntensiveComputingLab`。本次目标是检查队友 A/B 是否完成 W2；结论为主体代码已写好，但不能直接验收。
+- 用户本次仅调用 `$project-handoff`，授权保存材料；没有授权自动新建对话、修复、合并 B 分支、提交或推送。下一轮按用户实际指令确定执行范围。
+- 当前分支 `main`，提交 `da6ca59bed5d75e9a56b81fab1e48497a45348b1`；A 的实现提交 `aa3f9cb` 已经合并。
+- B 位于 `origin/feat/role-b-analytical-queries`，提交 `173a541cc62efe1b4a253c863cf61986fa173c72`；已 fetch 确认，以当前 main 为基底，尚未合并。
+- 审查前工作区干净，审查未改业务源码。本次保存只更新 `progress.md` 并新增 `docs/review_evidence/w2-2026-09-19/` 两份证据，未提交/推送。
+- 状态：材料已保存，等待接手核验。没有创建接手任务，接手任务编号为空。两项测试进程均已结束，没有本次遗留的测试任务需要接管。
+
+### 权威资料与状态冲突
+
+- `Assignment.md` 的 Week 2 部分：课程任务与交付物要求。
+- `task_plan.md`：已确认的 A/B/C 分工、六个查询、四张产品、四类优化及验收口径；其中“尚未开始实现”等状态落后于代码，以本次核查记录说明差异，不能把整个计划视为已完成。
+- `docs/data_contract.md`：W1 字段、单位、时间和关联限制。
+- B 分支的 `docs/role_b_query_design.md`、`configs/analytical_queries.json`：查询定义及分类口径；当前 main 没有这些文件，应通过 `git show` 或隔离副本读取。
+- A 产品仍使用原始天气代码、只记录有订单的小时；B 的规范查询采用天气分组及零订单小时补齐。这一接口差异尚未解决，不能把产品查询当成已经等价的优化版本。
+
+### 已确认问题与建议修复方向
+
+| 问题 | 位置与证据 | 建议及验收 |
+| --- | --- | --- |
+| A：整合快照发布流程不完整 | `data_products.py:106–117` 在缺 manifest 时直接拼接当前 batch 与最新整合版本；`scripts/run_integration.py:20–32` 未发布/更新该 manifest。静态确认，未对真实数据执行重摄入复现。 | 成功整合后发布来源批次及整合版本；验证重跑后使用新快照，拒绝把新 batch 与旧整合表拼成成功快照。 |
+| B：日期边界漏掉零订单小时 | Q3 SQL 第 8 行、Q4 第 13 行、Q5 第 7 行都从筛选后行程的 min/max 取边界。完整一天的 Q3 样例只计 4 小时；两周一的 Q5 应在 00/01 点并列，却只返回 00 点。 | 结合已知数据覆盖范围和显式查询区间构建 UTC 小时日历，补测首尾零订单、空区间和 DST。不要把数据未覆盖时段当成零需求。 |
+| A/B：产品与查询口径不同 | `build_weather_impact_summary` 的分母只含该 Zone 有订单的小时且保留原始代码；`build_air_quality_impact_summary` 计入域外订单，而 Q3 只取 NYC。一个 NYC + 一个域外订单的样例，产品计 2，Q3 应计 1。B 未提供 PRODUCT_BUILDERS 替换。 | 统一统计范围、天气分类和小时分母；用产品重算与基础 SQL 做结果一致性验证，再做性能比较。 |
+| A：UTC 元数据偏移 | `data_products.py:189–192,212` 去掉 Python datetime 时区后交给 Spark。本机复现 UTC 12:00 被写成 UTC 04:00。 | 保留 aware datetime 或使用 Spark 时间表达式；按 epoch 核对创建、刷新及审计时间，并验证重复刷新保留创建时间。 |
+| A：Windows 测试依赖缺失 | `tests/test_data_products.py:126` 的 ZoneInfo 查询报缺少 `tzdata`，`requirements.txt` 未声明该依赖。 | 修正依赖/跨平台测试方案，使用项目 Python 环境重跑失败测试；不能把此次结果写成全部通过。 |
+
+以上修复是 Agent 建议，尚未执行。建议先解决正确性与接口问题，再启动 C 的缓存、分区裁剪、广播连接和 AQE 对照。
+
+### 验证与证据
+
+- 使用项目 `.venv\Scripts\python.exe`（Python 3.11.9），在 B 分支的临时副本运行 `python -m unittest tests.test_queries tests.test_data_products -v`。
+- 实际结果：12 项耗时 302.916 秒，11 项通过，1 项报错。B 的 8 项全部通过；A 的四产品测试因缺少 `tzdata` 中断，后续断言没有执行。
+- A 文档中的 31 项全测/四产品全量成功及 B 文档中的 39 项全测成功是队友记录，不是此次复测结果。本次没有重跑六个全量查询、全套 39 项测试或 C benchmark。
+- 已保留可随项目移动的[小样本结果](docs/review_evidence/w2-2026-09-19/review-probes.json)和[复现脚本](docs/review_evidence/w2-2026-09-19/review_probes.py)。脚本依赖 B 分支的查询及测试 fixture，需在对应代码副本根目录、`PYTHONPATH=src` 下运行；输出 `review-probes.json` 到运行目录。没有固化完整运行日志。
+- 仅本机临时材料：`C:\Users\h1349\AppData\Local\Temp\dic-w2-review-173a541\`，含 B 代码副本、`review-tests.log`、`review-probes.log`、`review-notes.md`；临时目录可能被清理，不能作为唯一交接来源。
+- Spark 结束阶段有 Windows 临时目录清理消息；测试最终结果按 unittest 的 `FAILED (errors=1)` 和退出码判断，不能把它解释成全测通过。
+
+### 接续第一步与完成标准
+
+1. 只读核对本记录编号、当前 Git 状态、A/B 提交是否变化，以及上述两份证据是否可读取；如队友已更新，先复核差异，避免重复修复。
+2. 当前授权止于审查与保存。若用户下一轮明确要求修复，再在隔离分支/副本处理上述五项；若只要求查看，则只说明状态，不自动改源码。
+3. 获得修复授权后的验收：新增能捕获各问题的回归测试，A/B 受影响测试通过；若改共享模块则完整回归；之后在独立输出目录验证全量查询与产品等价，保留 W1 数据和历史实验。
+4. C 的优化实验、最终 W2 设计/benchmark 报告、提交包仍未完成；“A/B 写好”不代表整周作业已完成。

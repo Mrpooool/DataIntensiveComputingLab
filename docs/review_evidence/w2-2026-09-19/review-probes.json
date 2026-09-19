@@ -1,0 +1,83 @@
+{
+  "q3_requested_full_day": {
+    "expected_hours": 24,
+    "actual_hours": 4
+  },
+  "q5_two_mondays": {
+    "expected_tied_hours": [
+      0,
+      1
+    ],
+    "actual": [
+      {
+        "weekday_number": 1,
+        "weekday_name": "Monday",
+        "local_pickup_hour": 0,
+        "observed_hour_count": 1,
+        "total_trip_count": 2,
+        "average_hourly_trip_count": 2.0
+      }
+    ]
+  },
+  "weather_product_vs_q4": {
+    "canonical_demand_range": {
+      "1": 2.0,
+      "2": 1.0
+    },
+    "product_rows": [
+      {
+        "pickup_location_id": 1,
+        "weather_category": "1",
+        "pickup_zone": "Alpha",
+        "trip_count": 2,
+        "valid_hour_count": 1,
+        "distance_sum": 4.0,
+        "valid_distance_count": 2
+      },
+      {
+        "pickup_location_id": 1,
+        "weather_category": "2",
+        "pickup_zone": "Alpha",
+        "trip_count": 2,
+        "valid_hour_count": 1,
+        "distance_sum": 5.0,
+        "valid_distance_count": 1
+      },
+      {
+        "pickup_location_id": 1,
+        "weather_category": "unmatched",
+        "pickup_zone": "Alpha",
+        "trip_count": 1,
+        "valid_hour_count": 1,
+        "distance_sum": 10.0,
+        "valid_distance_count": 1
+      },
+      {
+        "pickup_location_id": 2,
+        "weather_category": "2",
+        "pickup_zone": "Beta",
+        "trip_count": 1,
+        "valid_hour_count": 1,
+        "distance_sum": 2.0,
+        "valid_distance_count": 1
+      },
+      {
+        "pickup_location_id": 2,
+        "weather_category": "8",
+        "pickup_zone": "Beta",
+        "trip_count": 3,
+        "valid_hour_count": 2,
+        "distance_sum": 18.0,
+        "valid_distance_count": 3
+      }
+    ]
+  },
+  "air_product_scope": {
+    "expected_nyc_demand": 1,
+    "actual_product_demand": 2
+  },
+  "metadata_timestamp": {
+    "expected_utc": "2024-01-01 12:00:00",
+    "actual_utc": "2024-01-01 04:00:00"
+  }
+}
