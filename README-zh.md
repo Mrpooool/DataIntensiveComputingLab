@@ -75,6 +75,24 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 
 本次复测的完整结果保存在本机 `data/benchmark/20260909T144949Z-b493da9f/results.json`，SQL 与执行计划位于同目录下的 `queries.sql` 和 `plans/`。这些产物不纳入 Git，可按上述命令重新生成。[性能报告](docs/benchmark_report.md) 和 [原始耗时](docs/benchmark_timings.csv) 记录的是首次实验 `20260909T141616Z-ce81d328`，其中约 130/155 秒的导入耗时属于该次运行。
 
+## 运行 W2 分析查询
+
+W2 直接复用 W1 的 `data/delta/`，无需创建新仓库或复制 Delta 表。先确认 W1 四表摄入和整合已经成功，再运行：
+
+```powershell
+# 执行 B 负责的全部六个 Spark SQL 查询
+.\.venv\Scripts\python.exe -m scripts.run_analytical_queries --query all
+
+# 只执行 Q3、Q5；日期范围是纽约当地日期的左闭右开区间
+.\.venv\Scripts\python.exe -m scripts.run_analytical_queries `
+  --query q3 --query q5 --start-date 2024-01-01 --end-date 2024-02-01 --explain
+
+# A 负责的四张复用产品
+.\.venv\Scripts\python.exe -m scripts.run_data_products
+```
+
+六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。运行时会通过 `completed_integration.json` 固定到同一次 W1 Delta 快照；用 `--show-sql` 可查看实际提交给 Spark 的 SQL。
+
 ## 测试与协作
 
 ```powershell
@@ -82,7 +100,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-2026-09-09 最终回归记录为 `Ran 27 tests in 276.692s`、`OK`；该次运行将小样本 Delta 快照并行度设为 2。测试使用真实 Spark/Delta 和小样本，覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持及 Delta 读回等情况。
+2026-09-09 的 W1 最终回归记录为 `Ran 27 tests in 276.692s`、`OK`；加入 W2 A/B 代码后，2026-09-18 完整回归为 `Ran 39 tests in 140.705s`、`OK`。测试使用真实 Spark/Delta 和小样本，覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持、Delta 读回及六个分析查询。
 
 完整数据验证需另跑上述流水线。Windows 退出时偶发 JAR 清理日志，应结合测试 `OK` 和退出码判断。
 
