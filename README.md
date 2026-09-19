@@ -54,6 +54,11 @@ Execute these commands in order:
 
 # Week 2: materialize Role A's four reusable Delta products.
 .\.venv\Scripts\python.exe -m scripts.run_data_products
+
+# Week 2: run the optimization experiments (partition pruning, caching, broadcast join, AQE,
+# product-backed rewrites) against the same snapshot; --list shows the experiment names.
+.\.venv\Scripts\python.exe -m scripts.run_query_benchmark
+.\.venv\Scripts\python.exe -m scripts.run_query_benchmark --experiment q1_partition_pruning --repeats 5
 ```
 
 Integration and benchmarking require a successful four-table batch. A single-table rerun invalidates the completion marker; rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs; each successful integration republishes `data/delta/metadata/completed_integration.json`, which pins the Delta versions the Week 2 queries and products read. Use one ingestion process per output directory; each benchmark creates a new run directory.
@@ -66,11 +71,14 @@ Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--hel
 | Ingestion metadata, batch marker and integration snapshot | `data/delta/metadata/` |
 | Integrated table and match statistics | `data/delta/integrated/` |
 | Week 2 analytical products | `data/delta/analytics/` |
-| Benchmark tables, results, SQL and plans | `data/benchmark/<run_id>/` |
+| Week 1 benchmark tables, results, SQL and plans | `data/benchmark/<run_id>/` |
+| Week 2 experiment results, SQL and executed plans | `data/benchmark/w2/<run_id>/` |
 
 The benchmark measures ingestion time, storage size, file count and query latency. It compares trip counts per pickup borough, average trip duration per day and average fare per pickup borough, with result checks across both layouts.
 
 The Week 2 query definitions, output grains, null rules, weather mapping and PM2.5 bands are documented in [Role B query design](docs/role_b_query_design.md). Use `--show-sql` to print the rendered Spark SQL and `--help` for all query options.
+
+The Week 2 experiments pair each baseline query with one optimized variant, warm both once, then measure them three times in alternating order with `collect()`; a speedup is reported only when the optimized result equals the baseline. Cache experiments measure the baseline before the cache is built, because Spark substitutes a cached plan into every matching query. `results.json` records medians, raw samples, plan facts (partition filters, join strategy, in-memory scans, final adaptive plans), cache build time and memory, and product storage; `plans/` holds `EXPLAIN FORMATTED` plus the executed plan of every variant. Product-backed rewrites (`src/dic_pipeline/sql/products/`) cover the full coverage range only.
 
 ## Tests
 

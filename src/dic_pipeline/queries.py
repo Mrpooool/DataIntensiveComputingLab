@@ -276,7 +276,19 @@ def _validate_date_range(
     return start, end
 
 
-def _trip_filter(timezone_name: str, start_date: str | None, end_date: str | None) -> str:
+def _trip_filter(
+    timezone_name: str,
+    start_date: str | None,
+    end_date: str | None,
+    *,
+    pickup_date_filter: bool = False,
+) -> str:
+    """Half-open local-date predicate on the UTC hour key.
+
+    ``pickup_date_filter`` adds the same bounds on the ``pickup_date`` partition
+    column. ``pickup_date`` is the New York date of the pickup, so the extra
+    predicate changes nothing in the result and lets Delta prune partitions.
+    """
     local_date = (
         "TO_DATE(FROM_UTC_TIMESTAMP(pickup_hour_utc, "
         f"{_sql_string(timezone_name)}))"
@@ -284,8 +296,12 @@ def _trip_filter(timezone_name: str, start_date: str | None, end_date: str | Non
     conditions = []
     if start_date:
         conditions.append(f"{local_date} >= DATE {_sql_string(start_date)}")
+        if pickup_date_filter:
+            conditions.append(f"pickup_date >= DATE {_sql_string(start_date)}")
     if end_date:
         conditions.append(f"{local_date} < DATE {_sql_string(end_date)}")
+        if pickup_date_filter:
+            conditions.append(f"pickup_date < DATE {_sql_string(end_date)}")
     return " AND ".join(conditions) if conditions else "TRUE"
 
 
@@ -311,6 +327,56 @@ def _calendar_bounds(
     return first_hour, end_hour_exclusive
 
 
+def render_template(
+    template: str,
+    *,
+    config_path: str | Path = DEFAULT_QUERY_CONFIG,
+    start_date: date | str | None = None,
+    end_date: date | str | None = None,
+    coverage: tuple[str, str] | None = None,
+    pickup_date_filter: bool = False,
+    views: Mapping[str, str] | None = None,
+    **extra: str,
+) -> str:
+    """Fill the shared placeholders of a query template.
+
+    Every SQL that must agree with Q1-Q6 (the canonical files, product-backed
+    rewrites, benchmark variants) renders through here, so the date filter,
+    calendar bounds and classification expressions are literally the same text.
+    ``views`` overrides entries of ``source_views``; ``extra`` supplies
+    template-specific placeholders such as ``product_view``.
+    """
+    config = load_query_config(config_path)
+    start, end = _validate_date_range(start_date, end_date)
+    source_views = dict(config["source_views"])
+    for name, view in (views or {}).items():
+        if name not in source_views:
+            raise KeyError(f"Unknown source view {name!r}")
+        if not _SAFE_IDENTIFIER.fullmatch(view):
+            raise ValueError(f"Unsafe Spark SQL view name: {view!r}")
+        source_views[name] = view
+    timezone_name = config["analysis_timezone"]
+    first_hour, end_hour_exclusive = _calendar_bounds(
+        timezone_name, start, end, coverage or load_calendar_coverage()
+    )
+    return template.format(
+        integrated_view=source_views["integrated"],
+        weather_view=source_views["weather"],
+        air_quality_view=source_views["air_quality"],
+        analysis_timezone=timezone_name,
+        trip_filter=_trip_filter(
+            timezone_name, start, end, pickup_date_filter=pickup_date_filter
+        ),
+        calendar_first_hour=first_hour,
+        calendar_end_hour_exclusive=end_hour_exclusive,
+        weather_category_integrated=integrated_weather_category_sql(config),
+        weather_case_standardized=_weather_case(config, "coco"),
+        pm25_case=_pm25_case(config, "air_quality_pm25"),
+        minimum_weather_hours=int(config["minimum_weather_hours_per_category"]),
+        **extra,
+    ).strip()
+
+
 def render_query(
     query_id: str,
     *,
@@ -318,6 +384,8 @@ def render_query(
     start_date: date | str | None = None,
     end_date: date | str | None = None,
     coverage: tuple[str, str] | None = None,
+    pickup_date_filter: bool = False,
+    views: Mapping[str, str] | None = None,
 ) -> str:
     """Render one checked SQL template with an optional half-open local-date range.
 
@@ -326,27 +394,16 @@ def render_query(
     """
     if query_id not in QUERY_DEFINITIONS:
         raise KeyError(f"Unknown query {query_id!r}; choose from {sorted(QUERY_DEFINITIONS)}")
-    config = load_query_config(config_path)
-    start, end = _validate_date_range(start_date, end_date)
-    views = config["source_views"]
-    timezone_name = config["analysis_timezone"]
-    first_hour, end_hour_exclusive = _calendar_bounds(
-        timezone_name, start, end, coverage or load_calendar_coverage()
-    )
     template = (SQL_DIRECTORY / QUERY_DEFINITIONS[query_id].sql_file).read_text(encoding="utf-8")
-    return template.format(
-        integrated_view=views["integrated"],
-        weather_view=views["weather"],
-        air_quality_view=views["air_quality"],
-        analysis_timezone=timezone_name,
-        trip_filter=_trip_filter(timezone_name, start, end),
-        calendar_first_hour=first_hour,
-        calendar_end_hour_exclusive=end_hour_exclusive,
-        weather_category_integrated=integrated_weather_category_sql(config),
-        weather_case_standardized=_weather_case(config, "coco"),
-        pm25_case=_pm25_case(config, "air_quality_pm25"),
-        minimum_weather_hours=int(config["minimum_weather_hours_per_category"]),
-    ).strip()
+    return render_template(
+        template,
+        config_path=config_path,
+        start_date=start_date,
+        end_date=end_date,
+        coverage=coverage,
+        pickup_date_filter=pickup_date_filter,
+        views=views,
+    )
 
 
 def validate_query_inputs(
@@ -381,6 +438,7 @@ def run_query(
     start_date: date | str | None = None,
     end_date: date | str | None = None,
     coverage: tuple[str, str] | None = None,
+    pickup_date_filter: bool = False,
 ) -> DataFrame:
     """Execute one query against already-registered Week 1 views."""
     validate_query_inputs(spark, query_id, config_path)
@@ -391,6 +449,7 @@ def run_query(
             start_date=start_date,
             end_date=end_date,
             coverage=coverage,
+            pickup_date_filter=pickup_date_filter,
         )
     )
     expected = list(QUERY_DEFINITIONS[query_id].result_columns)
