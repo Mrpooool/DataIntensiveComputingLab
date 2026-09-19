@@ -2,13 +2,13 @@
 
 [English](README.md)
 
-W1 课程项目：用 PySpark 清洗 Taxi、Weather、Air Quality 和 Taxi Zones，写入 Delta 表，并生成每行代表一趟行程的整合表。
+课程项目：用 PySpark + Delta Lake 处理四份 2024 年纽约市数据。W1 完成摄入、清洗、校验与行程整合；W2 在此基础上增加六个分析查询、四张可复用数据产品，以及针对它们的四类优化对照实验。
 
-截至 2026-09-09，四表摄入、行程整合和两种 Taxi 布局的全量性能实验均已跑通，27 项小样本回归测试通过。整合表保留 9,554,576 条唯一行程。设计说明、数据契约、架构图和实验报告见文末链接。
+截至 2026-09-19：W1 与 W2 的代码、全量运行和实验均已完成，W2 完整设计报告与提交包待整合。进度见 [progress.md](progress.md)。
 
 ## 环境与输入
 
-统一使用 **Python 3.11.9、JDK 21、PySpark 4.2.0、Delta 4.4.0**；依赖固定在 `requirements.txt`。先安装 Python/JDK，设置 `JAVA_HOME`，再在项目根目录的 PowerShell 执行：
+统一使用 Python 3.11.9、JDK 21、PySpark 4.2.0、Delta 4.4.0；依赖固定在 `requirements.txt`。先安装 Python/JDK，设置 `JAVA_HOME`，再在项目根目录的 PowerShell 执行：
 
 ```powershell
 python --version
@@ -26,20 +26,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 
 ## 运行 W1
 
-从仓库根目录依次运行以下命令。整合和 benchmark 都需要四表摄入成功后生成的完成标记，其中 benchmark 使用该批次的 Zone 表，并重新读取原始 Taxi 文件构建实验布局。
+从仓库根目录依次运行；每一步都依赖上一步产生的标记文件。
 
 ```powershell
 # A/B：读取、清洗并写入四份数据
 .\.venv\Scripts\python.exe -m scripts.run_ingestion --dataset all
 
-# C：关联地点、天气、PM2.5，保存整合表与匹配统计
+# C：关联地点、天气、PM2.5，保存整合表与匹配统计，并发布分析快照
 .\.venv\Scripts\python.exe -m scripts.run_integration
 
-# C：重建两种 Taxi 布局，执行 Task 6 性能实验
+# C：重建两种 Taxi 布局，执行 Task 6 存储实验
 .\.venv\Scripts\python.exe -m scripts.run_benchmark
 ```
 
-默认使用 `local[4]`、4 GB JVM 堆和 128 个 shuffle 分区。摄入与 benchmark 支持 `--master`、`--driver-memory`、`--shuffle-partitions`；使用 `--help` 查看路径参数。
+默认使用 `local[4]`、4 GB JVM 堆和 128 个 shuffle 分区；各命令支持 `--master`、`--driver-memory`、`--shuffle-partitions`，用 `--help` 查看全部参数。
 
 | 输出 | 路径 |
 | --- | --- |
@@ -47,20 +47,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 | 摄入记录、四表完成标记、整合快照 | `data/delta/metadata/` |
 | 整合表（按 `pickup_date` 分区） | `data/delta/integrated/integrated_taxi_trips/` |
 | 匹配统计 | `data/delta/integrated/integration_metrics.json` |
-| W1 每次独立实验、原始耗时、查询计划 | `data/benchmark/<run_id>/` |
+| W1 存储实验 | `data/benchmark/<run_id>/` |
 | W2 优化实验结果、SQL、执行后计划 | `data/benchmark/w2/<run_id>/` |
 
-只有四表全部摄入成功才发布 `completed_batch.json`；关联读取其中记录的四个 Delta 版本。单表重跑会使完成标记失效，此时重新运行 `--dataset all`。同一输出目录只运行一个摄入进程；W1 不清理交接版本。摄入和关联会覆盖各自目标表，benchmark 每次新建目录。关联成功后会重新发布 `data/delta/metadata/completed_integration.json`，W2 的查询与产品固定读取其中记录的 Delta 版本；若只有旧的 W1 输出而没有该文件，只有在整合表的 `run_id` 与当前批次一致时才会自动补发。
+只有四表全部摄入成功才发布 `completed_batch.json`，整合读取其中记录的四个 Delta 版本；单表重跑会使完成标记失效，需重新运行 `--dataset all`。整合成功后会重新发布 `completed_integration.json`，W2 的查询与产品固定读取其中记录的版本；若只有旧的 W1 输出而缺该文件，只有在整合表的 `run_id` 与当前批次一致时才自动补发。同一输出目录只运行一个摄入进程；摄入和整合会覆盖各自目标表，benchmark 每次新建目录。
 
-## Task 6 实验口径
+## W1 存储实验结果
 
-- S0 不分区；S1 按纽约当地 `pickup_date` 分区。同一原始输入、清洗规则、压缩和 `coalesce(8)` 写入参数。
-- 导入各跑两次，顺序 S0/S1、S1/S0；计时包含读取、清洗及 accepted/rejected 提交，读回验证在计时外。
-- 三个指定查询：各上车 borough 行程数、每日平均时长、各上车 borough 平均车费；另测 2 月 1 至 7 日范围查询。
-- 每个查询/布局预热一次，交替测三次；核对结果后报告中位数。Taxi 不缓存，操作系统缓存不可控。
-- 文件数和大小取当前 Delta 快照，不包含 `.crc`、日志及历史废文件。查询使用第二轮写出的表。
+S0 不分区 vs S1 按纽约当地 `pickup_date` 分区，其余参数完全相同。方法口径（两轮交替导入、预热一次后测三次、结果核对、文件统计只取当前快照）见 [W1 性能报告](docs/benchmark_report.md)。
 
-最终复测于 2026-09-09 完成，运行 ID 为 `20260909T144949Z-b493da9f`，状态为 `success`。四次导入均保留 9,554,576 条唯一行程，24 次查询测量的结果一致。下表为本次复测结果，时间均取中位数，数据大小按十进制 MB 计算。
+最终复测 `20260909T144949Z-b493da9f`，状态 `success`，四次导入均保留 9,554,576 条唯一行程，24 次查询测量结果一致。时间取中位数，数据大小按十进制 MB 计：
 
 | 指标 | S0 不分区 | S1 按日期分区 |
 | --- | ---: | ---: |
@@ -72,35 +68,47 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 | 各上车 borough 平均车费（秒） | 1.064 | 1.878 |
 | 2 月 1 至 7 日统计（秒） | 0.618 | 0.575 |
 
-三个全量查询仍是 S0 更快，一周范围查询的差距较小。操作系统缓存不可控，每项查询只有三次测量，这些耗时不能视为固定性能指标，也不能直接用于判断更宽的整合表应采用哪种布局。
+三个全量查询 S0 更快，一周范围查询差距很小。每项只测三次且操作系统缓存不可控，这些耗时不能视为固定性能指标。[性能报告](docs/benchmark_report.md) 与 [原始耗时](docs/benchmark_timings.csv) 记录的是首次实验 `20260909T141616Z-ce81d328`（导入约 130/155 秒），与上表不是同一次运行。
 
-本次复测的完整结果保存在本机 `data/benchmark/20260909T144949Z-b493da9f/results.json`，SQL 与执行计划位于同目录下的 `queries.sql` 和 `plans/`。这些产物不纳入 Git，可按上述命令重新生成。[性能报告](docs/benchmark_report.md) 和 [原始耗时](docs/benchmark_timings.csv) 记录的是首次实验 `20260909T141616Z-ce81d328`，其中约 130/155 秒的导入耗时属于该次运行。
+## 运行 W2
 
-## 运行 W2 分析查询
-
-W2 直接复用 W1 的 `data/delta/`，无需创建新仓库或复制 Delta 表。先确认 W1 四表摄入和整合已经成功，再运行：
+W2 直接复用 W1 的 `data/delta/`，无需新建仓库或复制表。确认 W1 摄入与整合成功后运行：
 
 ```powershell
-# 执行 B 负责的全部六个 Spark SQL 查询
+# B：六个 Spark SQL 分析查询
 .\.venv\Scripts\python.exe -m scripts.run_analytical_queries --query all
 
 # 只执行 Q3、Q5；日期范围是纽约当地日期的左闭右开区间
 .\.venv\Scripts\python.exe -m scripts.run_analytical_queries `
   --query q3 --query q5 --start-date 2024-01-01 --end-date 2024-02-01 --explain
 
-# A 负责的四张复用产品
+# A：四张可复用数据产品
 .\.venv\Scripts\python.exe -m scripts.run_data_products
 
-# C 负责的优化实验：分区裁剪、缓存、广播连接、AQE、产品版改写；--list 列出实验名
+# C：优化实验（分区裁剪、缓存、广播连接、AQE、产品版改写）；--list 列出实验名
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark --experiment q1_partition_pruning --repeats 5
 ```
 
-六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。Q3–Q5 的小时日历取“请求区间 ∩ `configs/datasets.json` 中校验过的 Taxi 时间窗”，不再由首末订单推导。运行时会通过 `completed_integration.json` 固定到同一次 W1 Delta 快照；用 `--show-sql` 可查看实际提交给 Spark 的 SQL。
+六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。Q3 至 Q5 的小时日历取“请求区间 ∩ `configs/datasets.json` 中校验过的 Taxi 时间窗”，不由首末订单推导，因此窗口内无订单的小时计为零需求，窗口外不会凭空补出小时。用 `--show-sql` 查看实际提交给 Spark 的 SQL。
 
-实验结果见 [W2 benchmark report](docs/w2_benchmark_report.md)、[原始计时](docs/w2_benchmark_timings.csv) 和 [优化策略与权衡](docs/w2_design_optimization.md)。
+## W2 优化实验结果
 
-W2 实验把每个基础查询与一个优化变体配对：各预热一次，再交替测三次并 `collect()` 真算；只有优化结果与基础结果相等才报告加速比。缓存实验先测基线再建缓存，因为 Spark 会把已缓存的计划替换进任何匹配的查询。`results.json` 记录中位数、原始样本、计划事实（分区过滤、连接策略、内存扫描、AQE 最终计划）、缓存构建耗时与内存，以及产品表存储；`plans/` 保存每个变体的 `EXPLAIN FORMATTED` 和执行后计划。产品版改写（`src/dic_pipeline/sql/products/`）只对完整覆盖区间有效。
+每个基础查询配一个优化变体，各预热一次后交替测三次并 `collect()` 真算；只有优化结果与基础结果相等才报告加速比（涉及非规范查询的变体还要与规范查询核对）。缓存实验先测基线再建缓存，因为 Spark 会把已缓存的计划替换进任何匹配的查询。
+
+全量运行 `20260919T143454Z-9d921a51`，13 项实验全部结果一致，中位数加速比：
+
+| 技术 | 实验 | 加速比 |
+| --- | --- | ---: |
+| AQE | Q4 / Q6 | 5.73× / 1.13× |
+| 广播连接 | Q1（基础表重建） | 1.45× |
+| 分区裁剪 | Q1 / Q6 | 1.25× / 1.28× |
+| 缓存 | Q6 / Q4 | 1.39× / 1.00× |
+| 数据产品 | Q1-Q6 | 1.31× ～ 9.27× |
+
+Q4 的缓存无收益且占 77 MB，因为扫描不是它的瓶颈；这一负面结果与 AQE 在 Q4 上的 5.73× 一起说明该工作负载的开销集中在 shuffle 与聚合，而非 I/O。四张产品合计 172,329 字节（整合表 1,058,134,566 字节，开销 0.016%），全量刷新 142.5 秒，六个查询各跑一轮省 9.14 秒，约 16 轮回本。
+
+完整方法、T5 五个讨论题、局限与复现说明见 [W2 benchmark report](docs/w2_benchmark_report.md)；78 条原始样本见 [原始计时](docs/w2_benchmark_timings.csv)；优化策略与权衡见 [设计报告 C 节](docs/w2_design_optimization.md)。`results.json` 保存中位数、原始样本、计划事实（分区过滤、连接策略、内存扫描、AQE 最终计划）、缓存成本与产品存储，`plans/` 保存每个变体的 `EXPLAIN FORMATTED` 和执行后计划。产品版改写（`src/dic_pipeline/sql/products/`）只对完整覆盖区间有效。
 
 ## 测试与协作
 
@@ -109,15 +117,15 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-2026-09-09 的 W1 最终回归记录为 `Ran 27 tests in 276.692s`、`OK`；加入 W2 A/B 代码后，2026-09-18 完整回归为 `Ran 39 tests in 140.705s`、`OK`。2026-09-19 修复审查发现的五项问题后，完整回归为 `Ran 51 tests`、`OK`（新增快照发布/来源校验、日历边界、DST 与空区间、UTC 元数据、产品与查询对齐等测试）。Windows 上 `zoneinfo` 依赖 `tzdata`，`requirements.txt` 已固定版本。测试使用真实 Spark/Delta 和小样本，覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持、Delta 读回及六个分析查询。
+测试使用真实 Spark/Delta 和小样本，不需要原始数据，跑完需要几分钟。覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持、Delta 读回、六个分析查询、产品与查询口径等价，以及实验框架本身。Windows 上 `zoneinfo` 依赖 `tzdata`，已固定在 `requirements.txt`。
 
-完整数据验证需另跑上述流水线。Windows 退出时偶发 JAR 清理日志，应结合测试 `OK` 和退出码判断。
+测试数量随项目增长：W1 完成时 27 项（2026-09-09），加入 W2 A/B 后 39 项（2026-09-18），修复审查问题并加入实验框架后 55 项（2026-09-19）。全量数据验证需另跑上述流水线。Windows 退出时偶发 JAR 清理日志，应结合测试 `OK` 和退出码判断。
 
 | 角色 | 代码职责 |
 | --- | --- |
-| A：Task 2-3 | `ingestion.py`、环境安装、读写入口 |
-| B：Task 1、4 | `schemas.py`、`transforms.py`、`validation.py`、`preparation.py` |
-| C：Task 5-6 | `integration.py`、`benchmark.py` 及运行入口 |
+| A：摄入与数据产品 | `ingestion.py`、`data_products.py`、环境安装与运行入口 |
+| B：口径与查询 | `schemas.py`、`transforms.py`、`validation.py`、`preparation.py`、`queries.py`、`sql/` |
+| C：整合与性能 | `integration.py`、`benchmark.py`、`query_benchmark.py` 及对应入口 |
 
 在个人分支开发，通过 PR 合并；只提交相关源码、配置、文档和测试。不要提交 `data/`、`.venv/`、`.hadoop/` 或密钥。更改依赖需同步 `requirements.txt`。
 
@@ -127,7 +135,6 @@ $env:PYTHONPATH = "src"
 
 Weather 的纽约背景和 UTC 时区仍是显式假设；100% 小时匹配不代表指标完整或假设已验证。Air 保留全国原文件，标准表筛选纽约五区；当前六个站点仅覆盖其中三区。
 
-- [正式设计报告（Markdown，已润色）](docs/w1_design_report.md) · [4 页 PDF（润色前版本）](docs/w1_design_report.pdf)
-- [性能实验报告（首次实验）](docs/benchmark_report.md) · [首次实验原始耗时](docs/benchmark_timings.csv)
-- [执行计划](task_plan.md) · [数据目录](docs/data_catalog.md) · [数据契约](docs/data_contract.md)
-- [存储与摄入设计](docs/role_a_task2_task3.md) · [架构图](docs/architecture.md) · [进度](progress.md)
+- W1：[设计报告](docs/w1_design_report.md) · [性能报告](docs/benchmark_report.md) · [原始耗时](docs/benchmark_timings.csv) · [架构图](docs/architecture.md)
+- W2：[benchmark report](docs/w2_benchmark_report.md) · [原始计时](docs/w2_benchmark_timings.csv) · [优化策略与权衡](docs/w2_design_optimization.md) · [B 的查询设计](docs/role_b_query_design.md)
+- 共用：[执行计划](task_plan.md) · [数据目录](docs/data_catalog.md) · [数据契约](docs/data_contract.md) · [进度](progress.md)
