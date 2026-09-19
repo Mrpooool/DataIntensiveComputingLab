@@ -47,7 +47,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 | 摄入记录、四表完成标记、整合快照 | `data/delta/metadata/` |
 | 整合表（按 `pickup_date` 分区） | `data/delta/integrated/integrated_taxi_trips/` |
 | 匹配统计 | `data/delta/integrated/integration_metrics.json` |
-| 每次独立实验、原始耗时、查询计划 | `data/benchmark/<run_id>/` |
+| W1 每次独立实验、原始耗时、查询计划 | `data/benchmark/<run_id>/` |
+| W2 优化实验结果、SQL、执行后计划 | `data/benchmark/w2/<run_id>/` |
 
 只有四表全部摄入成功才发布 `completed_batch.json`；关联读取其中记录的四个 Delta 版本。单表重跑会使完成标记失效，此时重新运行 `--dataset all`。同一输出目录只运行一个摄入进程；W1 不清理交接版本。摄入和关联会覆盖各自目标表，benchmark 每次新建目录。关联成功后会重新发布 `data/delta/metadata/completed_integration.json`，W2 的查询与产品固定读取其中记录的 Delta 版本；若只有旧的 W1 输出而没有该文件，只有在整合表的 `run_id` 与当前批次一致时才会自动补发。
 
@@ -89,9 +90,15 @@ W2 直接复用 W1 的 `data/delta/`，无需创建新仓库或复制 Delta 表�
 
 # A 负责的四张复用产品
 .\.venv\Scripts\python.exe -m scripts.run_data_products
+
+# C 负责的优化实验：分区裁剪、缓存、广播连接、AQE、产品版改写；--list 列出实验名
+.\.venv\Scripts\python.exe -m scripts.run_query_benchmark
+.\.venv\Scripts\python.exe -m scripts.run_query_benchmark --experiment q1_partition_pruning --repeats 5
 ```
 
 六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。Q3–Q5 的小时日历取“请求区间 ∩ `configs/datasets.json` 中校验过的 Taxi 时间窗”，不再由首末订单推导。运行时会通过 `completed_integration.json` 固定到同一次 W1 Delta 快照；用 `--show-sql` 可查看实际提交给 Spark 的 SQL。
+
+W2 实验把每个基础查询与一个优化变体配对：各预热一次，再交替测三次并 `collect()` 真算；只有优化结果与基础结果相等才报告加速比。缓存实验先测基线再建缓存，因为 Spark 会把已缓存的计划替换进任何匹配的查询。`results.json` 记录中位数、原始样本、计划事实（分区过滤、连接策略、内存扫描、AQE 最终计划）、缓存构建耗时与内存，以及产品表存储；`plans/` 保存每个变体的 `EXPLAIN FORMATTED` 和执行后计划。产品版改写（`src/dic_pipeline/sql/products/`）只对完整覆盖区间有效。
 
 ## 测试与协作
 
