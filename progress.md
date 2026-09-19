@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-19：W1 已交付代码包；W2 的 A 产品代码已合并，B 查询代码在远端分支。A/B 主体实现已完成，但审查发现待修问题，尚未验收；C 优化实验未开始。详见本文末交接记录及 [task_plan.md](task_plan.md)。
+截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品与 B 分析查询均已合并进 `main`。A/B 主体实现已完成，但 2026-09-19 审查确认的五项问题尚未修复，未验收；C 优化实验未开始。详见本文末交接记录及 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -72,6 +72,16 @@
 
 公共：源=`integrated_taxi_trips`（钉在 `completed_integration.json`）；分析时区 `America/New_York`，小时键 UTC；全量覆盖刷新；行上元数据 `data_source` / version / created/refreshed / `schema_version`。B 可用 `--builders-module` 覆盖。W2 不做：零订单补齐、天气语义标签、PM2.5 分箱、增量刷新。
 
+### 2026-09-18 改动记录（B）
+
+- `src/dic_pipeline/queries.py` 与 `src/dic_pipeline/sql/`：完成 Q1–Q6 Spark SQL 查询库、输入 Schema 检查、日期参数和稳定输出契约。
+- `configs/analytical_queries.json`：固定纽约分析时区、Meteostat 天气分类、PM2.5 描述性分箱及 Q4 最低样本小时数。
+- `scripts/run_analytical_queries.py`：复用 A 的 Delta 快照注册入口，支持选择查询、日期范围、SQL 展示和 `EXPLAIN FORMATTED`。
+- `tests/test_queries.py`：8 项小样本测试覆盖六个查询、零订单小时、空值分母、两级 PM2.5 中位数、天气下 Zone 变化排名、并列高峰与环比。
+- `docs/role_b_query_design.md`：记录统计粒度、输出、缺测规则和 A/B/C 职责边界。
+
+任务 B 的 8 项测试已在 Spark 4.2.0 / Delta 4.4.0 上通过；随后完整仓库回归为 39 项全部通过（140.705 秒）。当前电脑没有纳入 Git 的全量 `data/delta/`，因此尚未在这里重跑六个全量查询，不能用小样本结果替代全量结果。
+
 ## 2026-09-19 审查交接：W2-REVIEW-20260919
 
 ### 目标、版本与授权
@@ -118,3 +128,11 @@
 2. 当前授权止于审查与保存。若用户下一轮明确要求修复，再在隔离分支/副本处理上述五项；若只要求查看，则只说明状态，不自动改源码。
 3. 获得修复授权后的验收：新增能捕获各问题的回归测试，A/B 受影响测试通过；若改共享模块则完整回归；之后在独立输出目录验证全量查询与产品等价，保留 W1 数据和历史实验。
 4. C 的优化实验、最终 W2 设计/benchmark 报告、提交包仍未完成；“A/B 写好”不代表整周作业已完成。
+
+### 2026-09-19 合并后更新（记录发出后的变化）
+
+- 上述审查记录是 2026-09-19 只读核查时的快照，其中“B 尚未合并”“当前 main 没有 `docs/role_b_query_design.md` / `configs/analytical_queries.json`”等表述已过期。
+- 复核结论：队友在审查后没有新提交，A 仍为 `aa3f9cb`、B 仍为 `173a541`；五项问题逐条静态复核，全部仍然存在（引用的行号也未变）。
+- 经用户授权，审查材料已提交，B 分支 `173a541` 已合并进 `main`，`docs/role_b_query_design.md`、`configs/analytical_queries.json`、`src/dic_pipeline/queries.py`、`src/dic_pipeline/sql/q1–q6`、`scripts/run_analytical_queries.py`、`tests/test_queries.py` 现已在 `main` 上，可直接读取，无需 `git show`。
+- 合并只是代码入主干，不代表验收：五项问题仍未修复，也没有重跑全量查询、全套测试或 C benchmark。
+- 下一步在 `c/pipeline-fixes` 上继续 C 的工作；该分支已同步到合并后的 `main`。

@@ -44,6 +44,16 @@ Execute these commands in order:
 
 # Compare unpartitioned and date-partitioned Taxi layouts.
 .\.venv\Scripts\python.exe -m scripts.run_benchmark
+
+# Week 2: run all six analytical queries on the published Week 1 snapshot.
+.\.venv\Scripts\python.exe -m scripts.run_analytical_queries --query all
+
+# Optional half-open New York date range and execution plans.
+.\.venv\Scripts\python.exe -m scripts.run_analytical_queries `
+  --query q3 --query q5 --start-date 2024-01-01 --end-date 2024-02-01 --explain
+
+# Week 2: materialize Role A's four reusable Delta products.
+.\.venv\Scripts\python.exe -m scripts.run_data_products
 ```
 
 Integration and benchmarking require a successful four-table batch. A single-table rerun invalidates the completion marker; rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs. Use one ingestion process per output directory; each benchmark creates a new run directory.
@@ -55,9 +65,12 @@ Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--hel
 | Standardized and rejected Delta tables | `data/delta/{standardized,rejected}/<dataset>/` |
 | Ingestion metadata and batch marker | `data/delta/metadata/` |
 | Integrated table and match statistics | `data/delta/integrated/` |
+| Week 2 analytical products | `data/delta/analytics/` |
 | Benchmark tables, results, SQL and plans | `data/benchmark/<run_id>/` |
 
 The benchmark measures ingestion time, storage size, file count and query latency. It compares trip counts per pickup borough, average trip duration per day and average fare per pickup borough, with result checks across both layouts.
+
+The Week 2 query definitions, output grains, null rules, weather mapping and PM2.5 bands are documented in [Role B query design](docs/role_b_query_design.md). Use `--show-sql` to print the rendered Spark SQL and `--help` for all query options.
 
 ## Tests
 
@@ -66,7 +79,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The September 9, 2026 run passed all 27 small-fixture tests. Separate full-data runs preserved 9,554,576 unique integrated trips and completed the benchmark successfully.
+The September 9, 2026 Week 1 run passed 27 small-fixture tests. After adding the Week 2 A/B work, the September 18 full regression passed all 39 tests. Separate Week 1 full-data runs preserved 9,554,576 unique integrated trips and completed the benchmark successfully; the six new queries still require a local `data/delta/` snapshot for a full-data run.
 
 ## Reports and source code
 
@@ -75,4 +88,3 @@ The September 9, 2026 run passed all 27 small-fixture tests. Separate full-data 
 - [Benchmark report](docs/benchmark_report.md) and [raw timings](docs/benchmark_timings.csv), covering the first experiment.
 - [Data catalog](docs/data_catalog.md) and [data contract](docs/data_contract.md), including time assumptions and missing-data rules.
 - [Pipeline code](src/dic_pipeline/), [run scripts](scripts/) and [tests](tests/).
-
