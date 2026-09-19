@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-15：W1 开发、验证与提交包已完成；W2 分工和执行方案已确定，尚未开始实现。详细安排见 [task_plan.md](task_plan.md)。
+截至 2026-09-18：W1 开发、验证与提交包已完成；W2 的 A 数据产品和 B 分析查询已进入实现与联调，C 优化实验仍待完成。详细安排见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -71,3 +71,13 @@
 
 
 公共：源=`integrated_taxi_trips`（钉在 `completed_integration.json`）；分析时区 `America/New_York`，小时键 UTC；全量覆盖刷新；行上元数据 `data_source` / version / created/refreshed / `schema_version`。B 可用 `--builders-module` 覆盖。W2 不做：零订单补齐、天气语义标签、PM2.5 分箱、增量刷新。
+
+### 2026-09-18 改动记录（B）
+
+- `src/dic_pipeline/queries.py` 与 `src/dic_pipeline/sql/`：完成 Q1–Q6 Spark SQL 查询库、输入 Schema 检查、日期参数和稳定输出契约。
+- `configs/analytical_queries.json`：固定纽约分析时区、Meteostat 天气分类、PM2.5 描述性分箱及 Q4 最低样本小时数。
+- `scripts/run_analytical_queries.py`：复用 A 的 Delta 快照注册入口，支持选择查询、日期范围、SQL 展示和 `EXPLAIN FORMATTED`。
+- `tests/test_queries.py`：8 项小样本测试覆盖六个查询、零订单小时、空值分母、两级 PM2.5 中位数、天气下 Zone 变化排名、并列高峰与环比。
+- `docs/role_b_query_design.md`：记录统计粒度、输出、缺测规则和 A/B/C 职责边界。
+
+任务 B 的 8 项测试已在 Spark 4.2.0 / Delta 4.4.0 上通过；随后完整仓库回归为 39 项全部通过（140.705 秒）。当前电脑没有纳入 Git 的全量 `data/delta/`，因此尚未在这里重跑六个全量查询，不能用小样本结果替代全量结果。
