@@ -44,12 +44,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 | 输出 | 路径 |
 | --- | --- |
 | 四张标准表、拒绝表 | `data/delta/{standardized,rejected}/<dataset>/` |
-| 摄入记录、四表完成标记 | `data/delta/metadata/` |
+| 摄入记录、四表完成标记、整合快照 | `data/delta/metadata/` |
 | 整合表（按 `pickup_date` 分区） | `data/delta/integrated/integrated_taxi_trips/` |
 | 匹配统计 | `data/delta/integrated/integration_metrics.json` |
 | 每次独立实验、原始耗时、查询计划 | `data/benchmark/<run_id>/` |
 
-只有四表全部摄入成功才发布 `completed_batch.json`；关联读取其中记录的四个 Delta 版本。单表重跑会使完成标记失效，此时重新运行 `--dataset all`。同一输出目录只运行一个摄入进程；W1 不清理交接版本。摄入和关联会覆盖各自目标表，benchmark 每次新建目录。
+只有四表全部摄入成功才发布 `completed_batch.json`；关联读取其中记录的四个 Delta 版本。单表重跑会使完成标记失效，此时重新运行 `--dataset all`。同一输出目录只运行一个摄入进程；W1 不清理交接版本。摄入和关联会覆盖各自目标表，benchmark 每次新建目录。关联成功后会重新发布 `data/delta/metadata/completed_integration.json`，W2 的查询与产品固定读取其中记录的 Delta 版本；若只有旧的 W1 输出而没有该文件，只有在整合表的 `run_id` 与当前批次一致时才会自动补发。
 
 ## Task 6 实验口径
 
@@ -91,7 +91,7 @@ W2 直接复用 W1 的 `data/delta/`，无需创建新仓库或复制 Delta 表�
 .\.venv\Scripts\python.exe -m scripts.run_data_products
 ```
 
-六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。运行时会通过 `completed_integration.json` 固定到同一次 W1 Delta 快照；用 `--show-sql` 可查看实际提交给 Spark 的 SQL。
+六个查询的粒度、天气分类、PM2.5 分箱、零订单小时和缺测处理见 [B 的查询设计](docs/role_b_query_design.md)。Q3–Q5 的小时日历取“请求区间 ∩ `configs/datasets.json` 中校验过的 Taxi 时间窗”，不再由首末订单推导。运行时会通过 `completed_integration.json` 固定到同一次 W1 Delta 快照；用 `--show-sql` 可查看实际提交给 Spark 的 SQL。
 
 ## 测试与协作
 
@@ -100,7 +100,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-2026-09-09 的 W1 最终回归记录为 `Ran 27 tests in 276.692s`、`OK`；加入 W2 A/B 代码后，2026-09-18 完整回归为 `Ran 39 tests in 140.705s`、`OK`。测试使用真实 Spark/Delta 和小样本，覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持、Delta 读回及六个分析查询。
+2026-09-09 的 W1 最终回归记录为 `Ran 27 tests in 276.692s`、`OK`；加入 W2 A/B 代码后，2026-09-18 完整回归为 `Ran 39 tests in 140.705s`、`OK`。2026-09-19 修复审查发现的五项问题后，完整回归为 `Ran 51 tests`、`OK`（新增快照发布/来源校验、日历边界、DST 与空区间、UTC 元数据、产品与查询对齐等测试）。Windows 上 `zoneinfo` 依赖 `tzdata`，`requirements.txt` 已固定版本。测试使用真实 Spark/Delta 和小样本，覆盖非法时间、NaN/Infinity、整数边界、去重选择、跨日与夏令时、环境缺测、关联行数保持、Delta 读回及六个分析查询。
 
 完整数据验证需另跑上述流水线。Windows 退出时偶发 JAR 清理日志，应结合测试 `OK` 和退出码判断。
 

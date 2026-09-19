@@ -307,17 +307,23 @@ def ingest_batch(
     return records
 
 
-def read_completed_batch(
-    spark: SparkSession,
-    delta_root: str | Path = DEFAULT_DELTA_ROOT,
-) -> dict[str, DataFrame]:
-    """Load the exact four Delta versions published by a successful full ingestion."""
+def load_completed_batch(delta_root: str | Path = DEFAULT_DELTA_ROOT) -> dict[str, Any]:
+    """Read the manifest published by the last successful four-table ingestion."""
     manifest = Path(delta_root) / "metadata" / "completed_batch.json"
     if not manifest.exists():
         raise RuntimeError("No completed batch. Run ingestion with --dataset all first.")
     batch = json.loads(manifest.read_text(encoding="utf-8"))
     if set(batch["versions"]) != set(DATASETS):
         raise ValueError("Completed batch must contain all four datasets.")
+    return batch
+
+
+def read_completed_batch(
+    spark: SparkSession,
+    delta_root: str | Path = DEFAULT_DELTA_ROOT,
+) -> dict[str, DataFrame]:
+    """Load the exact four Delta versions published by a successful full ingestion."""
+    batch = load_completed_batch(delta_root)
     return {
         dataset: spark.read.format("delta")
         .option("versionAsOf", batch["versions"][dataset])

@@ -9,9 +9,18 @@ WITH filtered_trips AS (
       AND environment_in_scope
       AND pickup_location_id IS NOT NULL
 ),
-bounds AS (
-    SELECT MIN(pickup_hour_utc) AS first_hour, MAX(pickup_hour_utc) AS last_hour
-    FROM filtered_trips
+calendar_hours AS (
+    SELECT EXPLODE(
+        CASE WHEN first_hour < end_hour_exclusive
+             THEN SEQUENCE(first_hour, end_hour_exclusive - INTERVAL 1 HOUR, INTERVAL 1 HOUR)
+             ELSE ARRAY()
+        END
+    ) AS pickup_hour_utc
+    FROM (
+        SELECT
+            {calendar_first_hour} AS first_hour,
+            {calendar_end_hour_exclusive} AS end_hour_exclusive
+    )
 ),
 zones AS (
     SELECT
@@ -23,13 +32,12 @@ zones AS (
 ),
 weather_hours AS (
     SELECT
-        weather_hour_utc AS pickup_hour_utc,
+        calendar_hours.pickup_hour_utc,
         {weather_case_standardized} AS weather_category
     FROM {weather_view}
-    CROSS JOIN bounds
+    JOIN calendar_hours
+      ON weather_hour_utc = calendar_hours.pickup_hour_utc
     WHERE coco IS NOT NULL
-      AND weather_hour_utc >= first_hour
-      AND weather_hour_utc <= last_hour
 ),
 observed_demand AS (
     SELECT pickup_hour_utc, pickup_location_id, COUNT(*) AS trip_count

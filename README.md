@@ -39,7 +39,7 @@ Execute these commands in order:
 # Ingest, validate and standardize all four datasets.
 .\.venv\Scripts\python.exe -m scripts.run_ingestion --dataset all
 
-# Enrich trips and write the integrated Delta table.
+# Enrich trips, write the integrated Delta table and publish the analytics snapshot.
 .\.venv\Scripts\python.exe -m scripts.run_integration
 
 # Compare unpartitioned and date-partitioned Taxi layouts.
@@ -56,14 +56,14 @@ Execute these commands in order:
 .\.venv\Scripts\python.exe -m scripts.run_data_products
 ```
 
-Integration and benchmarking require a successful four-table batch. A single-table rerun invalidates the completion marker; rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs. Use one ingestion process per output directory; each benchmark creates a new run directory.
+Integration and benchmarking require a successful four-table batch. A single-table rerun invalidates the completion marker; rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs; each successful integration republishes `data/delta/metadata/completed_integration.json`, which pins the Delta versions the Week 2 queries and products read. Use one ingestion process per output directory; each benchmark creates a new run directory.
 
 Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--help` to any command to view its options.
 
 | Output | Location |
 | --- | --- |
 | Standardized and rejected Delta tables | `data/delta/{standardized,rejected}/<dataset>/` |
-| Ingestion metadata and batch marker | `data/delta/metadata/` |
+| Ingestion metadata, batch marker and integration snapshot | `data/delta/metadata/` |
 | Integrated table and match statistics | `data/delta/integrated/` |
 | Week 2 analytical products | `data/delta/analytics/` |
 | Benchmark tables, results, SQL and plans | `data/benchmark/<run_id>/` |
@@ -79,7 +79,7 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The September 9, 2026 Week 1 run passed 27 small-fixture tests. After adding the Week 2 A/B work, the September 18 full regression passed all 39 tests. Separate Week 1 full-data runs preserved 9,554,576 unique integrated trips and completed the benchmark successfully; the six new queries still require a local `data/delta/` snapshot for a full-data run.
+The September 9, 2026 Week 1 run passed 27 small-fixture tests; the September 18 regression after the Week 2 A/B work passed 39. The September 19 review fixes (integration snapshot publishing, coverage-bounded hourly calendars in Q3-Q5, product/query scope alignment, timezone-aware product metadata, the `tzdata` dependency) added regression tests and the product-query alignment suite; the full regression that day passed all 51 tests. `zoneinfo` needs `tzdata` on Windows, which `requirements.txt` now pins. Separate Week 1 full-data runs preserved 9,554,576 unique integrated trips and completed the benchmark successfully.
 
 ## Reports and source code
 

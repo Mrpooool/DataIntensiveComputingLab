@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品与 B 分析查询均已合并进 `main`。A/B 主体实现已完成，但 2026-09-19 审查确认的五项问题尚未修复，未验收；C 优化实验未开始。详见本文末交接记录及 [task_plan.md](task_plan.md)。
+截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品与 B 分析查询均已合并进 `main`。审查确认的五项 A/B 问题已在 `c/pipeline-fixes` 修复并通过 51 项完整回归与本机全量运行（见文末修复记录），尚未合并回 `main`；C 优化实验未开始。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -136,3 +136,37 @@
 - 经用户授权，审查材料已提交，B 分支 `173a541` 已合并进 `main`，`docs/role_b_query_design.md`、`configs/analytical_queries.json`、`src/dic_pipeline/queries.py`、`src/dic_pipeline/sql/q1–q6`、`scripts/run_analytical_queries.py`、`tests/test_queries.py` 现已在 `main` 上，可直接读取，无需 `git show`。
 - 合并只是代码入主干，不代表验收：五项问题仍未修复，也没有重跑全量查询、全套测试或 C benchmark。
 - 下一步在 `c/pipeline-fixes` 上继续 C 的工作；该分支已同步到合并后的 `main`。
+
+## 2026-09-19 修复记录：W2-REVIEW-20260919 五项问题
+
+分支 `c/pipeline-fixes`（基于合并 B 之后的 `main` = `758dc73`）。以下为实际改动与验证结果，不是计划。
+
+### 改动
+
+| 问题 | 修复 | 位置 |
+| --- | --- | --- |
+| 1 整合快照发布不完整 | `scripts.run_integration` 改为调用 `integration.build_integrated_table`：写入并校验行数后发布 `completed_integration.json`（批次 run_id、四张标准表版本、整合表版本）。发布函数迁到 `integration.py`（`data_products` 仍可导入），发布前用整合表 `run_id` 与批次 `run_id` 做来源校验；旧 W1 输出缺 manifest 时只有校验通过才自动补发，否则报错要求重跑整合。`ingestion.load_completed_batch` 抽出供复用。 | `src/dic_pipeline/integration.py`、`ingestion.py`、`data_products.py`、`scripts/run_integration.py` |
+| 2 Q3/Q4/Q5 日历漏首尾零订单小时 | 日历改为“请求的当地日期区间 ∩ `configs/datasets.json` 校验过的 Taxi 上车窗口（`valid_pickup_start_utc`/`valid_pickup_end_utc_exclusive`）”，全部在 UTC 小时上用 `SEQUENCE` 生成，`CASE WHEN` 守护空区间（ANSI 模式下起点大于终点会抛错）。Q4 的天气小时改为与日历连接。`render_query`/`run_query` 新增 `coverage` 参数，默认读 `queries.load_calendar_coverage()`。 | `src/dic_pipeline/queries.py`、`sql/q3_*.sql`、`q4_*.sql`、`q5_*.sql` |
+| 3 产品与查询口径不同 | `weather_impact_summary`、`air_quality_impact_summary` 只保留 `environment_in_scope` 行程（与 Q2–Q4 同一总体）；天气标签改用 `queries.integrated_weather_category_sql`（与 Q2 模板同一个 `CASE` 表达式，Q2 模板同步改为引用它）；`valid_hour_count` 更名 `observed_hour_count`，新增 `pickup_borough`；两张产品 `schema_version` 升到 1.1.0。`daily_mobility_summary`、`taxi_zone_statistics` 保持全量行程（与 Q1/Q5/Q6 一致）。 | `src/dic_pipeline/data_products.py`、`configs/data_products.json` |
+| 4 UTC 元数据偏移 | 删除 `_as_utc_naive`；进入 Spark 的 Python datetime 一律带时区，`created_at` 用 `unix_micros` 读回 epoch 再还原为 aware UTC（`collect()` 返回的是宿主本地时间的 naive 值）。 | `src/dic_pipeline/data_products.py` |
+| 5 Windows 缺 `tzdata` | `requirements.txt` 增加 `tzdata==2026.4`，`.venv` 已安装。 | `requirements.txt` |
+
+### 新增/调整的测试
+
+- `tests/test_queries.py`（12 项）：Q3 整天 24 小时补齐（原断言 4 小时是问题本身）；日历裁剪到校验窗口（全区间 2183 小时、请求 2023-12-25 起仍从 2024-01-01 05:00Z 开始）；两周一首端零订单并列（00/01 点各平均 1）；2024-03-10 DST 日 23 小时且无 2 点；窗口外区间 Q3/Q4/Q5 返回 0 行；Q4 天气小时超出末单仍计入。
+- `tests/test_data_products.py`（6 项）：缺 manifest 时来源匹配才补发、不匹配报错且不落盘；产品标签/范围断言；元数据时间戳（产品行与审计表）落在刷新前后的 epoch 窗口内；fixture 增加 `run_id`、`environment_in_scope` 及一条“在范围内但环境缺测”的行程。
+- `tests/test_integration.py`（4 项）：`build_integrated_table` 首次发布 manifest；第二批次重跑后 manifest 指向新版本，`register_analytics_inputs` 读到新快照。
+- `tests/test_product_query_alignment.py`（新，5 项）：用产品重算并与 Q1–Q6 对比——Q1/Q6 精确相等，Q2 分类别 sum/count 重算均值相等，Q3 每小时 NYC 订单数一致（同小时一条域外订单不再计入），Q4 用产品订单数 ÷ 日历天气小时数重建 `demand_range` 与查询相等，Q5 峰值总量与产品分桶一致。
+
+### 验证结果（本机，2026-09-19，`.venv` Python 3.11.9 / Spark 4.2.0 / Delta 4.4.0）
+
+- 受影响套件：`test_queries` 12 项 OK（75.9 s）；`test_integration` + `test_product_query_alignment` 9 项 OK；`test_data_products` 6 项 OK（438 s，与其他测试并行时的耗时）。
+- 完整回归 `unittest discover -s tests`：**51 项 OK，1085.8 s**（与全量数据 smoke 并行，耗时偏大）。`git diff --check` 通过。
+- 全量数据（本机 `data/delta/`，W1 批次 `563b32da…`）：`register_analytics_inputs` 自动补发 `completed_integration.json`（来源校验通过，整合版本 0），注册 9,554,576 行。`python -m scripts.run_data_products` 四张产品 `status=success`：`daily_mobility_summary` 2,183 行、`taxi_zone_statistics` 773 行、`weather_impact_summary` 1,217 行（原 3,017 行是原始天气代码 × 全量行程）、`air_quality_impact_summary` 2,183 行；创建/刷新时间为正确的 UTC 瞬时（12:18Z = 本机 20:18）。`python -m scripts.run_analytical_queries --query all` 六个查询全部运行：Q3 日历合计 2,183 小时、订单 9,517,007（NYC 范围，无 `missing_pm25`）；Q5 每个星期×小时 `observed_hour_count`=13（恰好 13 周）；Q6 三个月合计 9,554,576。
+- 未做：产品与查询在全量数据上的逐项等价核对（小样本对齐测试已覆盖口径，全量等价留给 C 的 benchmark 框架）；未推送、未合并回 `main`。
+- 注意：`docs/review_evidence/w2-2026-09-19/review_probes.py` 引用了已删除的 `_as_utc_naive`，它是针对 `173a541` 的复现脚本，保留原样作为证据，不在新代码上运行。
+
+### 下一步
+
+1. 合并 `c/pipeline-fixes` 回 `main`（无冲突预期：`main` 自 `758dc73` 后无新提交）。
+2. C：在此基线上搭 `query_benchmark.py`，先做 Q1/Q2/Q6 的缓存与 AQE 对照，再做 Q3–Q5、分区裁剪、广播连接，并把“产品 vs 基础 SQL”的全量等价核对纳入实验框架。

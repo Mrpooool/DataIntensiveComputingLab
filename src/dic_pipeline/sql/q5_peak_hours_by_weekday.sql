@@ -3,14 +3,18 @@ WITH filtered_trips AS (
     FROM {integrated_view}
     WHERE {trip_filter}
 ),
-bounds AS (
-    SELECT MIN(pickup_hour_utc) AS first_hour, MAX(pickup_hour_utc) AS last_hour
-    FROM filtered_trips
-),
 calendar_hours AS (
-    SELECT EXPLODE(SEQUENCE(first_hour, last_hour, INTERVAL 1 HOUR)) AS pickup_hour_utc
-    FROM bounds
-    WHERE first_hour IS NOT NULL
+    SELECT EXPLODE(
+        CASE WHEN first_hour < end_hour_exclusive
+             THEN SEQUENCE(first_hour, end_hour_exclusive - INTERVAL 1 HOUR, INTERVAL 1 HOUR)
+             ELSE ARRAY()
+        END
+    ) AS pickup_hour_utc
+    FROM (
+        SELECT
+            {calendar_first_hour} AS first_hour,
+            {calendar_end_hour_exclusive} AS end_hour_exclusive
+    )
 ),
 hourly_demand AS (
     SELECT pickup_hour_utc, COUNT(*) AS trip_count
