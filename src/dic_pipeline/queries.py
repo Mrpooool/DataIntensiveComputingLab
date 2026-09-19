@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from pyspark.sql import DataFrame, SparkSession
 
+from .contracts import load_dataset_config
 from .ingestion import PROJECT_ROOT
 
 
 DEFAULT_QUERY_CONFIG = PROJECT_ROOT / "configs" / "analytical_queries.json"
+DEFAULT_DATASET_CONFIG = PROJECT_ROOT / "configs" / "datasets.json"
 SQL_DIRECTORY = Path(__file__).with_name("sql")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_UTC_HOUR_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 @dataclass(frozen=True)
@@ -195,6 +198,27 @@ def load_query_config(path: str | Path = DEFAULT_QUERY_CONFIG) -> dict[str, Any]
     return config
 
 
+def load_calendar_coverage(
+    config_path: str | Path = DEFAULT_DATASET_CONFIG,
+) -> tuple[str, str]:
+    """The validated Taxi pickup window [start, end) in UTC.
+
+    Ingestion rejects trips outside this window, so it is the only period in
+    which an hour without trips can be read as zero demand. The hourly calendars
+    in Q3-Q5 never extend past it, whatever range a caller requests.
+    """
+    contract = load_dataset_config("taxi", config_path)
+    bounds = []
+    for key in ("valid_pickup_start_utc", "valid_pickup_end_utc_exclusive"):
+        value = datetime.strptime(str(contract[key]), _UTC_HOUR_FORMAT)
+        if value.minute or value.second:
+            raise ValueError(f"{key} must fall on a whole UTC hour.")
+        bounds.append(value.strftime(_UTC_HOUR_FORMAT))
+    if bounds[0] >= bounds[1]:
+        raise ValueError("valid_pickup_start_utc must be earlier than valid_pickup_end_utc_exclusive.")
+    return bounds[0], bounds[1]
+
+
 def _sql_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -207,6 +231,15 @@ def _weather_case(config: Mapping[str, Any], column: str) -> str:
             f"WHEN {column} IN ({codes}) THEN {_sql_string(category['label'])}"
         )
     return "CASE " + " ".join(clauses) + " ELSE 'unknown_code' END"
+
+
+def integrated_weather_category_sql(config: Mapping[str, Any]) -> str:
+    """The single weather label expression shared by Q2 and the weather data product."""
+    return (
+        "CASE WHEN NOT weather_matched THEN 'unmatched' "
+        "WHEN weather_coco IS NULL THEN 'missing_code' "
+        f"ELSE {_weather_case(config, 'weather_coco')} END"
+    )
 
 
 def _pm25_case(config: Mapping[str, Any], column: str) -> str:
@@ -256,27 +289,60 @@ def _trip_filter(timezone_name: str, start_date: str | None, end_date: str | Non
     return " AND ".join(conditions) if conditions else "TRUE"
 
 
+def _calendar_bounds(
+    timezone_name: str,
+    start_date: str | None,
+    end_date: str | None,
+    coverage: tuple[str, str],
+) -> tuple[str, str]:
+    """SQL for the UTC hour calendar: the requested local dates clipped to known coverage."""
+    coverage_start, coverage_end = coverage
+    first_hour = f"TIMESTAMP '{coverage_start}Z'"
+    end_hour_exclusive = f"TIMESTAMP '{coverage_end}Z'"
+    zone = _sql_string(timezone_name)
+    if start_date:
+        first_hour = (
+            f"GREATEST(TO_UTC_TIMESTAMP(TIMESTAMP '{start_date} 00:00:00', {zone}), {first_hour})"
+        )
+    if end_date:
+        end_hour_exclusive = (
+            f"LEAST(TO_UTC_TIMESTAMP(TIMESTAMP '{end_date} 00:00:00', {zone}), {end_hour_exclusive})"
+        )
+    return first_hour, end_hour_exclusive
+
+
 def render_query(
     query_id: str,
     *,
     config_path: str | Path = DEFAULT_QUERY_CONFIG,
     start_date: date | str | None = None,
     end_date: date | str | None = None,
+    coverage: tuple[str, str] | None = None,
 ) -> str:
-    """Render one checked SQL template with an optional half-open local-date range."""
+    """Render one checked SQL template with an optional half-open local-date range.
+
+    ``coverage`` defaults to the validated Taxi window in ``configs/datasets.json``;
+    tests pass an explicit ``(start_utc, end_utc_exclusive)`` pair.
+    """
     if query_id not in QUERY_DEFINITIONS:
         raise KeyError(f"Unknown query {query_id!r}; choose from {sorted(QUERY_DEFINITIONS)}")
     config = load_query_config(config_path)
     start, end = _validate_date_range(start_date, end_date)
     views = config["source_views"]
+    timezone_name = config["analysis_timezone"]
+    first_hour, end_hour_exclusive = _calendar_bounds(
+        timezone_name, start, end, coverage or load_calendar_coverage()
+    )
     template = (SQL_DIRECTORY / QUERY_DEFINITIONS[query_id].sql_file).read_text(encoding="utf-8")
     return template.format(
         integrated_view=views["integrated"],
         weather_view=views["weather"],
         air_quality_view=views["air_quality"],
-        analysis_timezone=config["analysis_timezone"],
-        trip_filter=_trip_filter(config["analysis_timezone"], start, end),
-        weather_case_integrated=_weather_case(config, "weather_coco"),
+        analysis_timezone=timezone_name,
+        trip_filter=_trip_filter(timezone_name, start, end),
+        calendar_first_hour=first_hour,
+        calendar_end_hour_exclusive=end_hour_exclusive,
+        weather_category_integrated=integrated_weather_category_sql(config),
         weather_case_standardized=_weather_case(config, "coco"),
         pm25_case=_pm25_case(config, "air_quality_pm25"),
         minimum_weather_hours=int(config["minimum_weather_hours_per_category"]),
@@ -314,6 +380,7 @@ def run_query(
     config_path: str | Path = DEFAULT_QUERY_CONFIG,
     start_date: date | str | None = None,
     end_date: date | str | None = None,
+    coverage: tuple[str, str] | None = None,
 ) -> DataFrame:
     """Execute one query against already-registered Week 1 views."""
     validate_query_inputs(spark, query_id, config_path)
@@ -323,6 +390,7 @@ def run_query(
             config_path=config_path,
             start_date=start_date,
             end_date=end_date,
+            coverage=coverage,
         )
     )
     expected = list(QUERY_DEFINITIONS[query_id].result_columns)

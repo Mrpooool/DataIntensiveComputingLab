@@ -1,8 +1,19 @@
-"""Enrichment of standardized Taxi trips."""
+"""Enrichment of standardized Taxi trips and publication of the analytics snapshot."""
 
-from pyspark.sql import DataFrame, functions as F
+import json
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from delta.tables import DeltaTable
+from pyspark.sql import DataFrame, SparkSession, functions as F
+
+from .ingestion import DEFAULT_DELTA_ROOT, load_completed_batch, read_completed_batch, write_delta
 
 
+INTEGRATED_TABLE = "integrated/integrated_taxi_trips"
+INTEGRATION_MANIFEST = "metadata/completed_integration.json"
 NYC_BOROUGHS = ("Bronx", "Brooklyn", "Manhattan", "Queens", "Staten Island")
 WEATHER_METRICS = (
     "temp", "rhum", "prcp", "snwd", "wdir", "wspd", "wpgt", "pres", "cldc", "coco",
@@ -122,3 +133,70 @@ def integrate(
     with_zones = add_taxi_zones(taxi, zones)
     integrated = add_environment(with_zones, weather, air)
     return integrated, integration_metrics(taxi, integrated)
+
+
+def verify_integrated_provenance(
+    spark: SparkSession,
+    table_path: str | Path,
+    source_batch: Mapping[str, Any],
+) -> None:
+    """Refuse to pair an integrated table with a completed batch it was not built from."""
+    run_ids = sorted(
+        row.run_id
+        for row in spark.read.format("delta").load(str(table_path)).select("run_id").distinct().collect()
+    )
+    expected = str(source_batch["run_id"])
+    if run_ids != [expected]:
+        raise RuntimeError(
+            f"Integrated table {table_path} carries ingestion run(s) {run_ids}, not the completed "
+            f"batch {expected!r}. Run scripts.run_integration on the current batch first."
+        )
+
+
+def publish_integration_snapshot(
+    spark: SparkSession,
+    delta_root: str | Path,
+    *,
+    source_batch: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Atomically publish the integrated Delta version with the source versions it came from."""
+    root = Path(delta_root)
+    table_path = root / INTEGRATED_TABLE
+    verify_integrated_provenance(spark, table_path, source_batch)
+    version = int(DeltaTable.forPath(spark, str(table_path)).history(1).first()["version"])
+    snapshot = {
+        "run_id": source_batch["run_id"],
+        "standardized_versions": {
+            name: int(value) for name, value in source_batch["versions"].items()
+        },
+        "integrated_version": version,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    }
+    manifest = root / INTEGRATION_MANIFEST
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    pending = manifest.with_suffix(".tmp")
+    pending.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+    pending.replace(manifest)
+    return snapshot
+
+
+def build_integrated_table(
+    spark: SparkSession,
+    delta_root: str | Path = DEFAULT_DELTA_ROOT,
+) -> dict[str, Any]:
+    """Integrate the completed batch, verify the write, then publish the analytics snapshot."""
+    root = Path(delta_root)
+    batch = load_completed_batch(root)
+    tables = read_completed_batch(spark, root)
+    integrated, stats = integrate(
+        tables["taxi"], tables["weather"], tables["air_quality"], tables["taxi_zones"],
+    )
+    output = root / INTEGRATED_TABLE
+    write_delta(integrated.repartition("pickup_date"), output, partition_by=["pickup_date"])
+    written_count = spark.read.format("delta").load(str(output)).count()
+    if written_count != stats["output_count"]:
+        raise RuntimeError("Written integrated row count differs from the verified result.")
+    metrics_path = output.parent / "integration_metrics.json"
+    metrics_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
+    snapshot = publish_integration_snapshot(spark, root, source_batch=batch)
+    return {"stats": stats, "snapshot": snapshot, "output": str(output)}

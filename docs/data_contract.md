@@ -106,6 +106,8 @@ recomputing them.
 - The integrated table retains Taxi fields, adds `weather_*` metrics and source flags, and
   `air_quality_pm25` in Micrograms/cubic meter (LC). Missing observations are not filled.
 - Use left joins and verify the integrated row count equals accepted Taxi row count.
+- After the verified write, `scripts.run_integration` publishes `metadata/completed_integration.json` with the batch `run_id`, the four standardized Delta versions and the integrated Delta version. Week 2 analytics register exactly those versions. A missing manifest is bootstrapped from `completed_batch.json` only when every `run_id` in the integrated table equals the batch `run_id`; otherwise integration must be rerun.
+- Week 2 hourly calendars (Q3-Q5) span the requested local-date range clipped to the Taxi `valid_pickup_start_utc`/`valid_pickup_end_utc_exclusive` window; hours outside that window are never reported as zero demand.
 
 ## Transformation inventory
 
