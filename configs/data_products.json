@@ -2,30 +2,41 @@
   "source_view": "integrated_taxi_trips",
   "analysis_timezone": "America/New_York",
   "notes": {
-    "weather_category": "Role B mapping is frozen in configs/analytical_queries.json; the current A product still stores raw weather_coco labels.",
-    "pm25_bins": "Role B descriptive concentration bands are frozen in configs/analytical_queries.json; the A product intentionally keeps hourly PM2.5 values.",
-    "zero_demand_hours": "W2 products do not invent zero-demand hours; Q3-Q5 padding stays with role B."
+    "scope": "weather_impact_summary and air_quality_impact_summary keep only environment_in_scope (NYC) trips, the population of Q2-Q4; daily_mobility_summary and taxi_zone_statistics keep every trip, like Q1/Q5/Q6.",
+    "weather_category": "Labels come from configs/analytical_queries.json through dic_pipeline.queries.integrated_weather_category_sql, the same CASE expression Q2 renders.",
+    "pm25_bins": "The air product stores the hourly PM2.5 value; role B's descriptive bands are applied at query time.",
+    "zero_demand_hours": "Products store observed hours only. Q3-Q5 pad zero-demand hours from the validated Taxi coverage calendar (configs/datasets.json) at query time."
   },
   "products": {
     "daily_mobility_summary": {
       "schema_version": "1.0.0",
       "output_files": 1,
-      "keys": ["pickup_hour_utc"]
+      "keys": [
+        "pickup_hour_utc"
+      ]
     },
     "taxi_zone_statistics": {
       "schema_version": "1.0.0",
       "output_files": 1,
-      "keys": ["local_pickup_month", "pickup_location_id"]
+      "keys": [
+        "local_pickup_month",
+        "pickup_location_id"
+      ]
     },
     "weather_impact_summary": {
-      "schema_version": "1.0.0",
+      "schema_version": "1.1.0",
       "output_files": 1,
-      "keys": ["pickup_location_id", "weather_category"]
+      "keys": [
+        "pickup_location_id",
+        "weather_category"
+      ]
     },
     "air_quality_impact_summary": {
-      "schema_version": "1.0.0",
+      "schema_version": "1.1.0",
       "output_files": 1,
-      "keys": ["pickup_hour_utc"]
+      "keys": [
+        "pickup_hour_utc"
+      ]
     }
   }
 }

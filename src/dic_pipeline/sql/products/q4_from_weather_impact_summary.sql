@@ -1,15 +1,8 @@
-WITH filtered_trips AS (
-    SELECT
-        pickup_hour_utc,
-        pickup_location_id,
-        pickup_zone,
-        pickup_borough
-    FROM {integrated_view}
-    WHERE {trip_filter}
-      AND environment_in_scope
-      AND pickup_location_id IS NOT NULL
-),
-calendar_hours AS (
+-- Q4 rebuilt from the weather_impact_summary product. Per-zone trips per weather category
+-- come from the product; the per-category denominator is the calendar's weather hours,
+-- exactly as in the canonical zone x weather-hour cross join. Valid for the full coverage
+-- range only, because the product is not keyed by time.
+WITH calendar_hours AS (
     SELECT EXPLODE(
         CASE WHEN first_hour < end_hour_exclusive
              THEN SEQUENCE(first_hour, end_hour_exclusive - INTERVAL 1 HOUR, INTERVAL 1 HOUR)
@@ -22,14 +15,6 @@ calendar_hours AS (
             {calendar_end_hour_exclusive} AS end_hour_exclusive
     )
 ),
-zones AS (
-    SELECT
-        pickup_location_id,
-        MAX(pickup_zone) AS pickup_zone,
-        MAX(pickup_borough) AS pickup_borough
-    FROM filtered_trips
-    GROUP BY pickup_location_id
-),
 weather_hours AS (
     SELECT
         calendar_hours.pickup_hour_utc,
@@ -39,36 +24,44 @@ weather_hours AS (
       ON weather_hour_utc = calendar_hours.pickup_hour_utc
     WHERE coco IS NOT NULL
 ),
-observed_demand AS (
-    SELECT pickup_hour_utc, pickup_location_id, COUNT(*) AS trip_count
-    FROM filtered_trips
-    GROUP BY pickup_hour_utc, pickup_location_id
+category_hours AS (
+    SELECT weather_category, COUNT(*) AS sample_hour_count
+    FROM weather_hours
+    GROUP BY weather_category
+    HAVING COUNT(*) >= {minimum_weather_hours}
 ),
-zone_weather_hours AS (
-    SELECT
-        zones.pickup_location_id,
-        zones.pickup_zone,
-        zones.pickup_borough,
-        weather_hours.pickup_hour_utc,
-        weather_hours.weather_category,
-        COALESCE(observed_demand.trip_count, 0) AS trip_count
-    FROM zones
-    CROSS JOIN weather_hours
-    LEFT JOIN observed_demand
-      ON zones.pickup_location_id = observed_demand.pickup_location_id
-     AND weather_hours.pickup_hour_utc = observed_demand.pickup_hour_utc
-),
-category_statistics AS (
+zone_demand AS (
     SELECT
         pickup_location_id,
         MAX(pickup_zone) AS pickup_zone,
         MAX(pickup_borough) AS pickup_borough,
         weather_category,
-        COUNT(*) AS sample_hour_count,
-        AVG(trip_count) AS average_hourly_demand
-    FROM zone_weather_hours
+        SUM(trip_count) AS trip_count
+    FROM {product_view}
+    WHERE pickup_location_id IS NOT NULL
     GROUP BY pickup_location_id, weather_category
-    HAVING COUNT(*) >= {minimum_weather_hours}
+),
+zones AS (
+    SELECT
+        pickup_location_id,
+        MAX(pickup_zone) AS pickup_zone,
+        MAX(pickup_borough) AS pickup_borough
+    FROM zone_demand
+    GROUP BY pickup_location_id
+),
+category_statistics AS (
+    SELECT
+        zones.pickup_location_id,
+        zones.pickup_zone,
+        zones.pickup_borough,
+        category_hours.weather_category,
+        category_hours.sample_hour_count,
+        COALESCE(zone_demand.trip_count, 0) / category_hours.sample_hour_count AS average_hourly_demand
+    FROM zones
+    CROSS JOIN category_hours
+    LEFT JOIN zone_demand
+      ON zones.pickup_location_id = zone_demand.pickup_location_id
+     AND category_hours.weather_category = zone_demand.weather_category
 ),
 zone_variation AS (
     SELECT

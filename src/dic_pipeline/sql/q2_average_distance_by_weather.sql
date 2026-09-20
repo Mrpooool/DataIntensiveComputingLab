@@ -1,10 +1,6 @@
 WITH classified_trips AS (
     SELECT
-        CASE
-            WHEN NOT weather_matched THEN 'unmatched'
-            WHEN weather_coco IS NULL THEN 'missing_code'
-            ELSE {weather_case_integrated}
-        END AS weather_category,
+        {weather_category_integrated} AS weather_category,
         trip_distance
     FROM {integrated_view}
     WHERE {trip_filter}

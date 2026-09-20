@@ -1,9 +1,6 @@
-WITH filtered_trips AS (
-    SELECT pickup_hour_utc
-    FROM {integrated_view}
-    WHERE {trip_filter}
-),
-calendar_hours AS (
+-- Q5 rebuilt from the daily_mobility_summary product: hourly demand comes from the product
+-- (all trips, UTC hour key); the calendar padding and weekday conversion are canonical.
+WITH calendar_hours AS (
     SELECT EXPLODE(
         CASE WHEN first_hour < end_hour_exclusive
              THEN SEQUENCE(first_hour, end_hour_exclusive - INTERVAL 1 HOUR, INTERVAL 1 HOUR)
@@ -17,9 +14,9 @@ calendar_hours AS (
     )
 ),
 hourly_demand AS (
-    SELECT pickup_hour_utc, COUNT(*) AS trip_count
-    FROM filtered_trips
-    GROUP BY pickup_hour_utc
+    SELECT pickup_hour_utc, trip_count
+    FROM {product_view}
+    WHERE {trip_filter}
 ),
 local_hours AS (
     SELECT

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -22,11 +22,13 @@ from pyspark.sql.types import (
 )
 
 from .ingestion import DATASETS, DEFAULT_DELTA_ROOT, PROJECT_ROOT, write_delta
+from .integration import INTEGRATED_TABLE, INTEGRATION_MANIFEST, publish_integration_snapshot
+from .queries import DEFAULT_QUERY_CONFIG, integrated_weather_category_sql, load_query_config
 
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "data_products.json"
-INTEGRATION_MANIFEST = "metadata/completed_integration.json"
 BATCH_MANIFEST = "metadata/completed_batch.json"
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 ANALYSIS_TIMEZONE = "America/New_York"
 RESERVED_METADATA_COLUMNS = (
     "data_source",
@@ -95,14 +97,16 @@ def integration_snapshot(
 ) -> dict[str, Any]:
     """Read and validate the immutable handoff for analytics products.
 
-    Prefer ``completed_integration.json``. If it is missing but W1 left a
-    completed batch and an integrated Delta table, publish the snapshot from
-    those artifacts so Role A can refresh products without changing the W1 CLI.
+    ``scripts.run_integration`` publishes ``completed_integration.json`` after
+    every successful integration. Week 1 outputs predate that manifest; for
+    them the snapshot is bootstrapped from the completed batch and the
+    integrated table, but only when the table's ingestion run_id proves it was
+    built from that batch.
     """
     root = Path(delta_root)
     manifest_path = root / INTEGRATION_MANIFEST
     batch_path = root / BATCH_MANIFEST
-    integrated_path = root / "integrated" / "integrated_taxi_trips"
+    integrated_path = root / INTEGRATED_TABLE
     if not manifest_path.exists():
         if not batch_path.exists():
             raise RuntimeError(
@@ -156,40 +160,12 @@ def register_analytics_inputs(
     return snapshot
 
 
-def publish_integration_snapshot(
-    spark: SparkSession,
-    delta_root: str | Path,
-    *,
-    source_batch: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Atomically publish the integrated Delta version and its source versions."""
-    root = Path(delta_root)
-    table_path = root / "integrated" / "integrated_taxi_trips"
-    version = int(DeltaTable.forPath(spark, str(table_path)).history(1).first()["version"])
-    snapshot = {
-        "run_id": source_batch["run_id"],
-        "standardized_versions": {
-            name: int(value) for name, value in source_batch["versions"].items()
-        },
-        "integrated_version": version,
-        "published_at": _utc_now().isoformat(),
-    }
-    manifest = root / INTEGRATION_MANIFEST
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    pending = manifest.with_suffix(".tmp")
-    pending.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
-    pending.replace(manifest)
-    return snapshot
-
-
 def _metadata_path(output_root: str | Path) -> Path:
     return Path(output_root) / "metadata" / "product_refresh_runs"
 
 
-def _as_utc_naive(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+def _utc_from_micros(micros: int) -> datetime:
+    return _EPOCH + timedelta(microseconds=int(micros))
 
 
 def _created_at_frame(
@@ -198,7 +174,11 @@ def _created_at_frame(
     product_name: str,
     fallback: datetime,
 ) -> DataFrame:
-    """Keep created_at inside Spark so JVM/Python timezone conversion cannot shift it."""
+    """Keep created_at inside Spark; only timezone-aware Python datetimes cross into it.
+
+    A naive datetime is interpreted in the host's local zone on the way into
+    Spark, which shifted UTC metadata by the host offset on non-UTC machines.
+    """
     product_path = Path(output_root) / product_name
     if (product_path / "_delta_log").exists():
         existing = (
@@ -208,7 +188,9 @@ def _created_at_frame(
         )
         if existing.where(F.col("created_at_utc").isNotNull()).limit(1).count():
             return existing
-    return spark.createDataFrame([(_as_utc_naive(fallback),)], "created_at_utc timestamp")
+    if fallback.tzinfo is None:
+        raise ValueError("created_at fallback must be timezone-aware.")
+    return spark.createDataFrame([(fallback,)], "created_at_utc timestamp")
 
 
 def _write_refresh_metadata(
@@ -261,7 +243,10 @@ def refresh_product(
     root = Path(delta_root)
     products_root = Path(output_root) if output_root is not None else root / "analytics"
     created_at_frame = _created_at_frame(spark, products_root, product_name, started_at)
-    created_at = created_at_frame.first()["created_at_utc"]
+    # Read the epoch, not a collected datetime: collect() renders host-local naive values.
+    created_at = _utc_from_micros(
+        created_at_frame.select(F.unix_micros("created_at_utc")).first()[0]
+    )
     source_version = int(snapshot["integrated_version"])
     source_path = str(snapshot.get("integrated_path") or root / "integrated" / "integrated_taxi_trips")
     source_snapshot_json = json.dumps(dict(snapshot), sort_keys=True, default=str)
@@ -284,7 +269,7 @@ def refresh_product(
             product.crossJoin(created_at_frame)
             .withColumn("data_source", F.lit("integrated_taxi_trips"))
             .withColumn("source_delta_version", F.lit(source_version).cast("long"))
-            .withColumn("refreshed_at_utc", F.lit(_as_utc_naive(refreshed_at)).cast("timestamp"))
+            .withColumn("refreshed_at_utc", F.lit(refreshed_at))
             .withColumn("schema_version", F.lit(str(settings["schema_version"])))
         )
         _assert_unique_keys(enriched, list(settings.get("keys") or []), product_name)
@@ -316,9 +301,9 @@ def refresh_product(
             "source_path": source_path,
             "source_delta_version": source_version,
             "source_snapshot_json": source_snapshot_json,
-            "created_at_utc": _as_utc_naive(created_at) if isinstance(created_at, datetime) else created_at,
-            "started_at": _as_utc_naive(started_at),
-            "finished_at": _as_utc_naive(_utc_now()),
+            "created_at_utc": created_at,
+            "started_at": started_at,
+            "finished_at": _utc_now(),
             "execution_seconds": perf_counter() - started,
             "row_count": row_count,
             "data_bytes": data_bytes,
@@ -374,6 +359,11 @@ def _trips(spark: SparkSession) -> DataFrame:
     return spark.table("integrated_taxi_trips")
 
 
+def _nyc_trips(spark: SparkSession) -> DataFrame:
+    """Environment products use the same NYC scope as Q2-Q4."""
+    return _trips(spark).where(F.col("environment_in_scope"))
+
+
 def build_daily_mobility_summary(spark: SparkSession) -> DataFrame:
     """Local date/hour metrics keyed by the actual UTC hour."""
     trips = (
@@ -412,23 +402,28 @@ def build_taxi_zone_statistics(spark: SparkSession) -> DataFrame:
 
 
 def build_weather_impact_summary(spark: SparkSession) -> DataFrame:
-    trips = _trips(spark).withColumn(
-        "weather_category",
-        F.when(~F.col("weather_matched"), F.lit("unmatched"))
-        .otherwise(F.coalesce(F.col("weather_coco").cast("string"), F.lit("missing_code"))),
-    )
+    """NYC trips per pickup zone and frozen weather category, labelled exactly like Q2/Q4.
+
+    observed_hour_count is the number of hours in which the zone had trips under
+    that category. The per-category denominator Q4 uses is the weather-hour
+    calendar, which depends on the requested range and is derived at query time.
+    """
+    weather_category = integrated_weather_category_sql(load_query_config(DEFAULT_QUERY_CONFIG))
+    trips = _nyc_trips(spark).withColumn("weather_category", F.expr(weather_category))
     return trips.groupBy("pickup_location_id", "weather_category").agg(
         F.first("pickup_zone", ignorenulls=True).alias("pickup_zone"),
+        F.first("pickup_borough", ignorenulls=True).alias("pickup_borough"),
         F.count(F.lit(1)).alias("trip_count"),
-        F.countDistinct("pickup_hour_utc").alias("valid_hour_count"),
+        F.countDistinct("pickup_hour_utc").alias("observed_hour_count"),
         F.sum("trip_distance").alias("distance_sum"),
         F.count("trip_distance").alias("valid_distance_count"),
     )
 
 
 def build_air_quality_impact_summary(spark: SparkSession) -> DataFrame:
+    """NYC demand per UTC hour with the matched hourly PM2.5, the same population as Q3."""
     trips = (
-        _trips(spark)
+        _nyc_trips(spark)
         .withColumn("local_pickup_ts", _local_timestamp("pickup_hour_utc"))
         .withColumn("local_pickup_date", F.to_date("local_pickup_ts"))
     )
