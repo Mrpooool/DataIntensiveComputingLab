@@ -102,9 +102,12 @@ Week 1:
 
 Week 2:
 
+- [Complete design report](docs/w2_design_report.md) and [PDF](docs/w2_design_report.pdf), covering requirements, queries, products, optimization and trade-offs.
 - [Benchmark report](docs/w2_benchmark_report.md) and [raw timings](docs/w2_benchmark_timings.csv), covering thirteen optimization experiments.
+- [Benchmark report PDF](docs/w2_benchmark_report.pdf).
 - [Optimization strategy and trade-offs](docs/w2_design_optimization.md), role C's section of the Week 2 design report.
 - [Role B query design](docs/role_b_query_design.md).
+- The ready-to-submit archive is [submission2_2026-09-20.zip](submissions/submission2_2026-09-20.zip).
 
 Shared:
 

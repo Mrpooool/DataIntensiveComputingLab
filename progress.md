@@ -238,5 +238,12 @@
 ### 未完成
 
 - 提 PR，并知会 A/B 接口变更。B：Q3-Q5 日历规则改变、`render_query` 新增参数。A：两张环境产品的范围与标签改变、`schema_version` 升到 1.1.0、`run_integration` 现在发布快照、`requirements.txt` 新增 `tzdata` 需重装依赖。
-- W2 完整设计报告（A 整合 + B 的查询/产品设计说明）、提交包。
+- W2 完整设计报告和提交包已于 2026-09-20 完成，见下节。
 - 组合优化（先做的是单因素独立对照）；十城扩展的建议是基于数据形状的外推，非实测。
+
+## 2026-09-20 W2 交付包
+
+- 分支：`feat/week2-submission`，以包含 A/B/C 完整 W2 实现的 `origin/c/pipeline-fixes` 为起点，未直接修改 `main`。
+- 新增 `docs/w2_design_report.md` 及 3 页 PDF；重新整理 `docs/w2_benchmark_report.md` 及 2 页 PDF。最终 PDF 为纯黑白版式，删除运行页眉和推广行，仅保留底部页码。
+- `submissions/submission2/` 包含完整 `src`、`scripts`、`configs`、`tests`、固定依赖、两份报告、原始计时和独立复现 README。
+- 源码与提交包副本逐文件一致；提交包 Python 文件通过 `compileall`；PDF 逐页渲染与文本提取检查通过。

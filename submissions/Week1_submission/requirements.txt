@@ -1,0 +1,5 @@
+pyspark==4.2.0
+delta-spark==4.4.0
+py4j==0.10.9.9
+importlib_metadata==8.7.1
+zipp==4.1.0
