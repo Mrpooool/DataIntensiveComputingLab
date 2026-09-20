@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品与 B 分析查询均已合并进 `main`。A/B 主体实现已完成，但 2026-09-19 审查确认的五项问题尚未修复，未验收；C 优化实验未开始。详见本文末交接记录及 [task_plan.md](task_plan.md)。
+截至 2026-09-19：W1 已交付代码包；W2 的 A 数据产品（PR #4）与 B 分析查询（PR #5）已在 `main`。审查确认的五项 A/B 问题已修复，C 的 13 项优化实验、benchmark report 和优化策略说明已完成，均在 `c/pipeline-fixes`（已推送到远端，尚未提 PR）。剩余：W2 完整设计报告与提交包。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -136,3 +136,107 @@
 - 经用户授权，审查材料已提交，B 分支 `173a541` 已合并进 `main`，`docs/role_b_query_design.md`、`configs/analytical_queries.json`、`src/dic_pipeline/queries.py`、`src/dic_pipeline/sql/q1–q6`、`scripts/run_analytical_queries.py`、`tests/test_queries.py` 现已在 `main` 上，可直接读取，无需 `git show`。
 - 合并只是代码入主干，不代表验收：五项问题仍未修复，也没有重跑全量查询、全套测试或 C benchmark。
 - 下一步在 `c/pipeline-fixes` 上继续 C 的工作；该分支已同步到合并后的 `main`。
+
+## 2026-09-19 修复记录：W2-REVIEW-20260919 五项问题
+
+分支 `c/pipeline-fixes`（基于合并 B 之后的 `main` = `758dc73`）。以下为实际改动与验证结果，不是计划。
+
+### 改动
+
+| 问题 | 修复 | 位置 |
+| --- | --- | --- |
+| 1 整合快照发布不完整 | `scripts.run_integration` 改为调用 `integration.build_integrated_table`：写入并校验行数后发布 `completed_integration.json`（批次 run_id、四张标准表版本、整合表版本）。发布函数迁到 `integration.py`（`data_products` 仍可导入），发布前用整合表 `run_id` 与批次 `run_id` 做来源校验；旧 W1 输出缺 manifest 时只有校验通过才自动补发，否则报错要求重跑整合。`ingestion.load_completed_batch` 抽出供复用。 | `src/dic_pipeline/integration.py`、`ingestion.py`、`data_products.py`、`scripts/run_integration.py` |
+| 2 Q3/Q4/Q5 日历漏首尾零订单小时 | 日历改为“请求的当地日期区间 ∩ `configs/datasets.json` 校验过的 Taxi 上车窗口（`valid_pickup_start_utc`/`valid_pickup_end_utc_exclusive`）”，全部在 UTC 小时上用 `SEQUENCE` 生成，`CASE WHEN` 守护空区间（ANSI 模式下起点大于终点会抛错）。Q4 的天气小时改为与日历连接。`render_query`/`run_query` 新增 `coverage` 参数，默认读 `queries.load_calendar_coverage()`。 | `src/dic_pipeline/queries.py`、`sql/q3_*.sql`、`q4_*.sql`、`q5_*.sql` |
+| 3 产品与查询口径不同 | `weather_impact_summary`、`air_quality_impact_summary` 只保留 `environment_in_scope` 行程（与 Q2–Q4 同一总体）；天气标签改用 `queries.integrated_weather_category_sql`（与 Q2 模板同一个 `CASE` 表达式，Q2 模板同步改为引用它）；`valid_hour_count` 更名 `observed_hour_count`，新增 `pickup_borough`；两张产品 `schema_version` 升到 1.1.0。`daily_mobility_summary`、`taxi_zone_statistics` 保持全量行程（与 Q1/Q5/Q6 一致）。 | `src/dic_pipeline/data_products.py`、`configs/data_products.json` |
+| 4 UTC 元数据偏移 | 删除 `_as_utc_naive`；进入 Spark 的 Python datetime 一律带时区，`created_at` 用 `unix_micros` 读回 epoch 再还原为 aware UTC（`collect()` 返回的是宿主本地时间的 naive 值）。 | `src/dic_pipeline/data_products.py` |
+| 5 Windows 缺 `tzdata` | `requirements.txt` 增加 `tzdata==2026.4`，`.venv` 已安装。 | `requirements.txt` |
+
+### 新增/调整的测试
+
+- `tests/test_queries.py`（12 项）：Q3 整天 24 小时补齐（原断言 4 小时是问题本身）；日历裁剪到校验窗口（全区间 2183 小时、请求 2023-12-25 起仍从 2024-01-01 05:00Z 开始）；两周一首端零订单并列（00/01 点各平均 1）；2024-03-10 DST 日 23 小时且无 2 点；窗口外区间 Q3/Q4/Q5 返回 0 行；Q4 天气小时超出末单仍计入。
+- `tests/test_data_products.py`（6 项）：缺 manifest 时来源匹配才补发、不匹配报错且不落盘；产品标签/范围断言；元数据时间戳（产品行与审计表）落在刷新前后的 epoch 窗口内；fixture 增加 `run_id`、`environment_in_scope` 及一条“在范围内但环境缺测”的行程。
+- `tests/test_integration.py`（4 项）：`build_integrated_table` 首次发布 manifest；第二批次重跑后 manifest 指向新版本，`register_analytics_inputs` 读到新快照。
+- `tests/test_product_query_alignment.py`（新，5 项）：用产品重算并与 Q1–Q6 对比——Q1/Q6 精确相等，Q2 分类别 sum/count 重算均值相等，Q3 每小时 NYC 订单数一致（同小时一条域外订单不再计入），Q4 用产品订单数 ÷ 日历天气小时数重建 `demand_range` 与查询相等，Q5 峰值总量与产品分桶一致。
+
+### 验证结果（本机，2026-09-19，`.venv` Python 3.11.9 / Spark 4.2.0 / Delta 4.4.0）
+
+- 受影响套件：`test_queries` 12 项 OK（75.9 s）；`test_integration` + `test_product_query_alignment` 9 项 OK；`test_data_products` 6 项 OK（438 s，与其他测试并行时的耗时）。
+- 完整回归 `unittest discover -s tests`：**51 项 OK，1085.8 s**（与全量数据 smoke 并行，耗时偏大）。`git diff --check` 通过。
+- 全量数据（本机 `data/delta/`，W1 批次 `563b32da…`）：`register_analytics_inputs` 自动补发 `completed_integration.json`（来源校验通过，整合版本 0），注册 9,554,576 行。`python -m scripts.run_data_products` 四张产品 `status=success`：`daily_mobility_summary` 2,183 行、`taxi_zone_statistics` 773 行、`weather_impact_summary` 1,217 行（原 3,017 行是原始天气代码 × 全量行程）、`air_quality_impact_summary` 2,183 行；创建/刷新时间为正确的 UTC 瞬时（12:18Z = 本机 20:18）。`python -m scripts.run_analytical_queries --query all` 六个查询全部运行：Q3 日历合计 2,183 小时、订单 9,517,007（NYC 范围，无 `missing_pm25`）；Q5 每个星期×小时 `observed_hour_count`=13（恰好 13 周）；Q6 三个月合计 9,554,576。
+- 未做：产品与查询在全量数据上的逐项等价核对（小样本对齐测试已覆盖口径，全量等价留给 C 的 benchmark 框架）；未推送、未合并回 `main`。
+- 注意：`docs/review_evidence/w2-2026-09-19/review_probes.py` 引用了已删除的 `_as_utc_naive`，它是针对 `173a541` 的复现脚本，保留原样作为证据，不在新代码上运行。
+
+### 下一步
+
+1. 合并 `c/pipeline-fixes` 回 `main`（无冲突预期：`main` 自 `758dc73` 后无新提交）。
+2. C：在此基线上搭 `query_benchmark.py`，先做 Q1/Q2/Q6 的缓存与 AQE 对照，再做 Q3–Q5、分区裁剪、广播连接，并把“产品 vs 基础 SQL”的全量等价核对纳入实验框架。
+
+> 第 1 条的前提已过期：`main` 在那之后前进到 `abf5b0f`，B 的 PR #5 把同一个 `173a541` 合进了 main。两次合并的是同一个提交，内容不重复，虚拟合并无冲突。第 2 条已执行完毕，见下一节。
+
+## 2026-09-19 W2 优化实验（C）
+
+分支 `c/pipeline-fixes`。框架提交 `0e71253`，全量实验运行 ID `20260919T143454Z-9d921a51`。
+
+### 新增代码
+
+- `src/dic_pipeline/query_benchmark.py`：实验定义（`Experiment`/`Variant` 数据类）、配置上下文管理器、计划事实提取、产品表注册、运行器。
+- `scripts/run_query_benchmark.py`：CLI，支持 `--list`、`--experiment`、`--repeats`、`--start-date`/`--end-date`、`--skip-products`。
+- `src/dic_pipeline/sql/products/`：六个产品版改写，与基础查询共用 `render_template`，日期过滤/小时日历/分类表达式是同一份文本。
+- `src/dic_pipeline/queries.py`：抽出 `render_template`；`render_query`/`run_query` 新增 `pickup_date_filter`（分区裁剪用的等价谓词）和 `views`（替换源视图）。
+- `tests/test_query_benchmark.py`：4 项，验证 13 个实验全部结果相等、计划事实符合预期、不一致时不计时、配置与缓存被还原。
+
+### 实验协议
+
+各变体预热一次，交替测三次，`collect()` 真算，报加速比前必须结果相等（计数精确，浮点 rel 1e-9 / abs 1e-6）。广播实验额外与基础 Q1 核对。两处协议偏离已记录在 `results.json`：缓存实验先测基线再建缓存（Spark 会把已缓存计划替换进任何匹配查询）；缓存内存按构建前后差值报告（Delta 自身缓存 log-state RDD）。
+
+### 全量结果（9,554,576 行，中位数秒，13 项全部结果相等）
+
+| 实验 | 技术 | 基线 | 优化 | 加速 |
+| --- | --- | ---: | ---: | ---: |
+| `q1_partition_pruning` | 分区裁剪 | 1.84 | 1.47 | 1.25× |
+| `q6_partition_pruning` | 分区裁剪 | 0.81 | 0.63 | 1.28× |
+| `q4_cache_projection` | 缓存 | 4.87 | 4.86 | 1.00× |
+| `q6_cache_projection` | 缓存 | 1.44 | 1.03 | 1.39× |
+| `q1_broadcast_zones` | 广播连接 | 8.05 | 5.56 | 1.45× |
+| `q4_aqe` | AQE | 28.15 | 4.91 | 5.73× |
+| `q6_aqe` | AQE | 1.45 | 1.28 | 1.13× |
+| `q1_product_taxi_zone_statistics` | 数据产品 | 4.03 | 0.43 | 9.27× |
+| `q2_product_weather_impact_summary` | 数据产品 | 0.66 | 0.33 | 1.99× |
+| `q3_product_air_quality_impact_summary` | 数据产品 | 1.54 | 1.18 | 1.31× |
+| `q4_product_weather_impact_summary` | 数据产品 | 4.38 | 0.84 | 5.21× |
+| `q5_product_daily_mobility_summary` | 数据产品 | 0.94 | 0.32 | 2.99× |
+| `q6_product_daily_mobility_summary` | 数据产品 | 1.06 | 0.37 | 2.89× |
+
+计划证据：裁剪变体多出 3 个 `PartitionFilters`；广播基线 `SortMergeJoin` → 优化 `BroadcastHashJoin`；缓存只在优化侧出现 `InMemoryTableScan`；AQE 只在开启时出现 `isFinalPlan=true` 和 `AQEShuffleRead`。AQE 开关两侧的 Exchange 计数不可比（自适应计划文本内嵌子计划），未用于比较。
+
+存储与刷新：四张产品合计 172,329 字节 / 4 文件，整合表 1,058,134,566 字节 / 91 文件，开销 0.016%；全量刷新 142.5 秒。六个查询各跑一轮省 9.14 秒，约 16 轮回本。
+
+缓存成本：Q4 五列投影构建 4.59 秒、77.1 MB；Q6 单列 0.76 秒、19.5 MB；均已释放。
+
+### 交付物
+
+- [W2 benchmark report](docs/w2_benchmark_report.md)：方法、环境、结果、T5 五个讨论题、局限、复现。
+- [原始计时](docs/w2_benchmark_timings.csv)：78 条样本。
+- [优化策略与权衡](docs/w2_design_optimization.md)：C 在设计报告中负责的一节，待 A 整合进完整 3–5 页文档。
+- 运行产物 `data/benchmark/w2/20260919T143454Z-9d921a51/`（results.json、sql/、plans/），不纳入 Git。
+
+### 文档更新（`1cab797`）
+
+两个 README 重写：开头不再自称 W1 课程项目；运行命令按“W1 建平台 / W2 读它发布的快照”分组；删掉两处死链（`docs/w1_design_report.pdf`、`docs/role_a_task2_task3.md`，两个文件都不存在）；测试历史压成一句；角色表更新。中文 README 的“Task 6 实验口径”压缩成指向 W1 报告的一句，因为那 5 条方法与报告的 Method 一节重复；结果表保留，最终复测 `20260909T144949Z-b493da9f` 的数字在 Git 里没有第二处记录（`docs/benchmark_report.md` 记的是更早的 `ce81d328`，本文件只有运行 ID）。腾出的篇幅补了中文 README 原本完全没有的 W2 实验结果。
+
+### 最终验证
+
+改动涉及共享模块 `queries.py`（抽出 `render_template`，新增 `pickup_date_filter` / `views` 参数），按 `AGENTS.md` 跑完整回归：**55 项 OK，960.2 秒**。B 的六个查询全部照常。`git diff --check` 通过。
+
+### 当前分支与远端状态
+
+- `c/pipeline-fixes` = `1cab797`，已推送，`origin/c/pipeline-fixes` 与本地一致。
+- `origin/main` = `abf5b0f`：B 的 PR #5 合并了 `173a541`，与我们在 `758dc73` 合的是同一个提交，内容不重复。
+- 虚拟合并测试（`git merge-tree`）通过，无冲突；merge base 为 `173a541`，净改动 36 个文件、+2635/-284，全部是我们自己的工作。
+- PR 尚未创建：https://github.com/Mrpooool/DataIntensiveComputingLab/compare/main...c/pipeline-fixes
+
+### 未完成
+
+- 提 PR，并知会 A/B 接口变更。B：Q3-Q5 日历规则改变、`render_query` 新增参数。A：两张环境产品的范围与标签改变、`schema_version` 升到 1.1.0、`run_integration` 现在发布快照、`requirements.txt` 新增 `tzdata` 需重装依赖。
+- W2 完整设计报告（A 整合 + B 的查询/产品设计说明）、提交包。
+- 组合优化（先做的是单因素独立对照）；十城扩展的建议是基于数据形状的外推，非实测。
