@@ -4,12 +4,15 @@ import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession, functions as F
 
 from .ingestion import DEFAULT_DELTA_ROOT, load_completed_batch, read_completed_batch, write_delta
+from .monitoring import delta_output_stats, record_run, run_row, utc_now
 
 
 INTEGRATED_TABLE = "integrated/integrated_taxi_trips"
@@ -180,23 +183,80 @@ def publish_integration_snapshot(
     return snapshot
 
 
+def _monitoring_row(
+    run_id: str,
+    started_at: datetime,
+    elapsed: float,
+    *,
+    batch: Mapping[str, Any] | None,
+    stats: Mapping[str, Any],
+    written_count: int | None,
+    output: Mapping[str, int],
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    return run_row(
+        run_id=run_id,
+        stage="integration",
+        target="integrated_taxi_trips",
+        started_at=started_at,
+        execution_seconds=elapsed,
+        status="failed" if error else "success",
+        error=error,
+        processed_count=stats.get("input_count"),
+        inserted_count=stats.get("output_count"),
+        updated_count=None if error else 0,
+        duplicate_count=None if error else 0,
+        rejected_count=None if error else 0,
+        target_rows_after=written_count,
+        source_versions=None if batch is None else {
+            f"standardized_{name}": int(value) for name, value in batch["versions"].items()
+        },
+        **output,
+    )
+
+
 def build_integrated_table(
     spark: SparkSession,
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
+    *,
+    run_id: str | None = None,
+    monitoring: bool = True,
 ) -> dict[str, Any]:
     """Integrate the completed batch, verify the write, then publish the analytics snapshot."""
+    current_run_id = run_id or str(uuid4())
+    started_at = utc_now()
+    started = perf_counter()
     root = Path(delta_root)
-    batch = load_completed_batch(root)
-    tables = read_completed_batch(spark, root)
-    integrated, stats = integrate(
-        tables["taxi"], tables["weather"], tables["air_quality"], tables["taxi_zones"],
+    batch: Mapping[str, Any] | None = None
+    stats: dict[str, Any] = {}
+    written_count: int | None = None
+    output_stats: dict[str, int] = {}
+    try:
+        batch = load_completed_batch(root)
+        tables = read_completed_batch(spark, root)
+        integrated, stats = integrate(
+            tables["taxi"], tables["weather"], tables["air_quality"], tables["taxi_zones"],
+        )
+        output = root / INTEGRATED_TABLE
+        write_delta(integrated.repartition("pickup_date"), output, partition_by=["pickup_date"])
+        written_count = spark.read.format("delta").load(str(output)).count()
+        if written_count != stats["output_count"]:
+            raise RuntimeError("Written integrated row count differs from the verified result.")
+        metrics_path = output.parent / "integration_metrics.json"
+        metrics_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
+        snapshot = publish_integration_snapshot(spark, root, source_batch=batch)
+        if monitoring:
+            output_stats = delta_output_stats(spark, output)
+    except Exception as error:
+        row = _monitoring_row(
+            current_run_id, started_at, perf_counter() - started, batch=batch, stats=stats,
+            written_count=written_count, output=output_stats, error=error,
+        )
+        record_run(spark, row, root, enabled=monitoring, error=error)
+        raise
+    row = _monitoring_row(
+        current_run_id, started_at, perf_counter() - started, batch=batch, stats=stats,
+        written_count=written_count, output=output_stats,
     )
-    output = root / INTEGRATED_TABLE
-    write_delta(integrated.repartition("pickup_date"), output, partition_by=["pickup_date"])
-    written_count = spark.read.format("delta").load(str(output)).count()
-    if written_count != stats["output_count"]:
-        raise RuntimeError("Written integrated row count differs from the verified result.")
-    metrics_path = output.parent / "integration_metrics.json"
-    metrics_path.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
-    snapshot = publish_integration_snapshot(spark, root, source_batch=batch)
-    return {"stats": stats, "snapshot": snapshot, "output": str(output)}
+    record_run(spark, row, root, enabled=monitoring)
+    return {"stats": stats, "snapshot": snapshot, "output": str(output), "run_id": current_run_id}

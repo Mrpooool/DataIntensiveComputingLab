@@ -9,6 +9,7 @@ from delta.tables import DeltaTable
 from dic_pipeline.data_products import register_analytics_inputs
 from dic_pipeline.ingestion import DATASETS, create_spark, write_delta
 from dic_pipeline.integration import INTEGRATION_MANIFEST, add_taxi_zones, build_integrated_table
+from dic_pipeline.monitoring import PIPELINE_RUNS
 
 
 TAXI_SCHEMA = (
@@ -185,6 +186,29 @@ class ZoneIntegrationTests(unittest.TestCase):
                 {row.run_id for row in self.spark.table("integrated_taxi_trips").collect()},
                 {"run-2"},
             )
+
+            runs = {
+                row.run_id: row
+                for row in self.spark.read.format("delta").load(str(root / PIPELINE_RUNS)).collect()
+            }
+            self.assertEqual(set(runs), {first["run_id"], second["run_id"]})
+            latest = runs[second["run_id"]]
+            self.assertEqual((latest.stage, latest.target, latest.status),
+                             ("integration", "integrated_taxi_trips", "success"))
+            self.assertEqual((latest.processed_count, latest.inserted_count, latest.target_rows_after),
+                             (2, 2, 2))
+            self.assertEqual(latest.output_version, 1)
+            self.assertEqual(json.loads(latest.source_versions_json),
+                             {f"standardized_{name}": 1 for name in DATASETS})
+
+    def test_failed_integration_is_recorded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "No completed batch"):
+                build_integrated_table(self.spark, root, run_id="no-batch")
+            row = self.spark.read.format("delta").load(str(root / PIPELINE_RUNS)).first()
+            self.assertEqual((row.run_id, row.stage, row.status), ("no-batch", "integration", "failed"))
+            self.assertIn("No completed batch", row.error_message)
 
 
 if __name__ == "__main__":

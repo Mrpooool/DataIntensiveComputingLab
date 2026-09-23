@@ -13,16 +13,9 @@ import pyspark
 from delta import configure_spark_with_delta_pip
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import (
-    DoubleType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
 
 from .contracts import load_dataset_config
+from .monitoring import delta_output_stats, record_run, run_row
 from .preparation import PreparationResult, prepare
 from .schemas import RAW_SCHEMAS
 
@@ -31,28 +24,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "raw"
 DEFAULT_DELTA_ROOT = PROJECT_ROOT / "data" / "delta"
 DATASETS = ("taxi", "weather", "air_quality", "taxi_zones")
-
-METADATA_SCHEMA = StructType(
-    [
-        StructField("run_id", StringType(), False),
-        StructField("dataset", StringType(), False),
-        StructField("started_at", TimestampType(), False),
-        StructField("finished_at", TimestampType(), False),
-        StructField("execution_seconds", DoubleType(), False),
-        StructField("raw_input_count", LongType(), True),
-        StructField("scope_excluded_count", LongType(), True),
-        StructField("input_count", LongType(), True),
-        StructField("accepted_count", LongType(), True),
-        StructField("rejected_count", LongType(), True),
-        StructField("duplicate_count", LongType(), True),
-        StructField("schema_version", StringType(), True),
-        StructField("rule_version", StringType(), True),
-        StructField("status", StringType(), False),
-        StructField("error_counts_json", StringType(), True),
-        StructField("quality_flag_counts_json", StringType(), True),
-        StructField("error_message", StringType(), True),
-    ]
-)
 
 
 def _utc_now() -> datetime:
@@ -186,21 +157,43 @@ def _metadata_record(
     }
 
 
-def write_metadata(
-    spark: SparkSession,
+def _monitoring_row(
     record: Mapping[str, Any],
-    delta_root: str | Path = DEFAULT_DELTA_ROOT,
-) -> None:
-    """Append one success or failure record to the ingestion run table."""
-    path = Path(delta_root) / "metadata" / "ingestion_runs"
-    mode = "append" if (path / "_delta_log").exists() else "overwrite"
-    (
-        spark.createDataFrame([dict(record)], METADATA_SCHEMA)
-        .coalesce(1)
-        .write.format("delta")
-        .mode(mode)
-        .option("mergeSchema", "true")
-        .save(str(path))
+    metrics: Mapping[str, Any],
+    *,
+    input_paths: list[str] | None,
+    output: Mapping[str, int],
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    """Map an ingestion record onto ``pipeline_runs``: a full overwrite skips no existing keys.
+
+    Duplicates inside the source are rejected rows here; ``duplicate_count`` in
+    the monitoring table counts keys already present in the target instead.
+    """
+    succeeded = record["status"] == "success"
+    return run_row(
+        run_id=record["run_id"],
+        stage="ingestion",
+        target=record["dataset"],
+        started_at=record["started_at"],
+        execution_seconds=record["execution_seconds"],
+        status=record["status"],
+        error=error,
+        processed_count=record["input_count"],
+        inserted_count=record["accepted_count"],
+        updated_count=0 if succeeded else None,
+        duplicate_count=0 if succeeded else None,
+        rejected_count=record["rejected_count"],
+        scope_excluded_count=record["scope_excluded_count"],
+        target_rows_after=record["accepted_count"] if succeeded else None,
+        validation_enabled=True,
+        validation_failure_counts=metrics.get("error_counts"),
+        quality_flag_counts=metrics.get("quality_flag_counts"),
+        schema_version=record["schema_version"],
+        rule_version=record["rule_version"],
+        schema_changes=[],
+        input_paths=input_paths,
+        **output,
     )
 
 
@@ -211,8 +204,13 @@ def ingest_dataset(
     data_dir: str | Path = DEFAULT_DATA_DIR,
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
     run_id: str | None = None,
+    monitoring: bool = True,
 ) -> dict[str, Any]:
-    """Read, prepare, write, verify and record one dataset."""
+    """Read, prepare, write, verify and record one dataset.
+
+    ``monitoring=False`` skips the ``pipeline_runs`` row and the metadata it
+    alone needs (input file list, output table stats).
+    """
     # A single-table rerun also invalidates the previous complete handoff.
     (Path(delta_root) / "metadata" / "completed_batch.json").unlink(missing_ok=True)
     current_run_id = run_id or str(uuid4())
@@ -220,9 +218,13 @@ def ingest_dataset(
     started = perf_counter()
     result: PreparationResult | None = None
     metrics: dict[str, Any] = {}
+    input_paths: list[str] | None = None
+    output: dict[str, int] = {}
 
     try:
         raw = read_source(spark, dataset, data_dir)
+        if monitoring:
+            input_paths = sorted(raw.inputFiles())
         config = load_dataset_config(dataset)
         result = prepare(raw, config, run_id=current_run_id)
         metrics = dict(result.metrics)
@@ -249,6 +251,8 @@ def ingest_dataset(
                 f"{dataset}: wrote {rejected_written} rejected rows, "
                 f"expected {metrics['rejected_count']}"
             )
+        if monitoring:
+            output = delta_output_stats(spark, standardized_path)
 
         record = _metadata_record(
             run_id=current_run_id,
@@ -258,8 +262,6 @@ def ingest_dataset(
             status="success",
             metrics=metrics,
         )
-        write_metadata(spark, record, delta_root)
-        return record
     except Exception as error:
         record = _metadata_record(
             run_id=current_run_id,
@@ -270,11 +272,16 @@ def ingest_dataset(
             metrics=metrics,
             error=error,
         )
-        write_metadata(spark, record, delta_root)
+        row = _monitoring_row(record, metrics, input_paths=input_paths, output=output, error=error)
+        record_run(spark, row, delta_root, enabled=monitoring, error=error)
         raise
     finally:
         if result is not None:
             result.release()
+    # Outside the try: a failed monitoring write must not be recorded as a failed ingestion.
+    row = _monitoring_row(record, metrics, input_paths=input_paths, output=output)
+    record_run(spark, row, delta_root, enabled=monitoring)
+    return record
 
 
 def ingest_batch(
@@ -283,6 +290,7 @@ def ingest_batch(
     data_dir: str | Path = DEFAULT_DATA_DIR,
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
     run_id: str | None = None,
+    monitoring: bool = True,
 ) -> list[dict[str, Any]]:
     """Publish a handoff only after all four datasets succeed (one writer at a time)."""
     current_run_id = run_id or str(uuid4())
@@ -291,7 +299,7 @@ def ingest_batch(
     for dataset in DATASETS:
         record = ingest_dataset(
             spark, dataset, data_dir=data_dir, delta_root=delta_root,
-            run_id=current_run_id,
+            run_id=current_run_id, monitoring=monitoring,
         )
         records.append(record)
         path = Path(delta_root) / "standardized" / dataset

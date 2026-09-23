@@ -28,6 +28,7 @@ from pyspark.sql import DataFrame, SparkSession, functions as F
 from .benchmark import assert_same_results
 from .data_products import DEFAULT_CONFIG_PATH as PRODUCT_CONFIG_PATH
 from .data_products import load_product_config, product_table_stats
+from .monitoring import PIPELINE_RUNS
 from .queries import (
     DEFAULT_QUERY_CONFIG,
     QUERY_DEFINITIONS,
@@ -171,19 +172,19 @@ def register_products(
         info: dict[str, Any] = {"view": view, "path": str(path), "row_count": frame.count()}
         info.update(product_table_stats(spark, path))
         products[name] = info
-    audit_path = root / "metadata" / "product_refresh_runs"
+    audit_path = Path(delta_root) / PIPELINE_RUNS
     if products and (audit_path / "_delta_log").exists():
         latest = (
             spark.read.format("delta")
             .load(str(audit_path))
-            .where(F.col("status") == "success")
-            .groupBy("product_name")
+            .where((F.col("stage") == "product_refresh") & (F.col("status") == "success"))
+            .groupBy("target")
             .agg(F.max_by("execution_seconds", "finished_at").alias("refresh_seconds"))
             .collect()
         )
         for row in latest:
-            if row.product_name in products:
-                products[row.product_name]["last_refresh_seconds"] = float(row.refresh_seconds)
+            if row.target in products:
+                products[row.target]["last_refresh_seconds"] = float(row.refresh_seconds)
     return products
 
 

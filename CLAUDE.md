@@ -25,20 +25,22 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 .\.venv\Scripts\python.exe -m scripts.run_analytical_queries --query all
 .\.venv\Scripts\python.exe -m scripts.run_benchmark          # W1 storage-layout benchmark
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark    # W2 optimization experiments
+.\.venv\Scripts\python.exe -m scripts.run_monitoring_report  # W3 ops queries over metadata/pipeline_runs
+.\.venv\Scripts\python.exe -m scripts.run_w3_evaluation      # W3 production-readiness measurements
 ```
 
 Tests use `unittest` with small in-memory fixtures and temporary Delta tables — no raw data needed:
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v     # all (51 tests)
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v     # all
 .\.venv\Scripts\python.exe -m unittest tests.test_queries -v    # one module
 .\.venv\Scripts\python.exe -m unittest tests.test_queries.AnalyticalQueryTests.test_q1_monthly_demand_by_zone -v
 ```
 
 Each suite spins up its own `create_spark(master="local[2]", shuffle_partitions=2)` in `setUpClass`, so a full run takes minutes. No linter or formatter is configured.
 
-Useful during development: `--show-sql` and `--explain` on `run_analytical_queries`, `--list` on `run_query_benchmark`, `--product` on `run_data_products`, and `--help` everywhere.
+Useful during development: `--show-sql` and `--explain` on `run_analytical_queries`, `--list` on `run_query_benchmark` and `run_w3_evaluation`, `--no-monitoring` on the pipeline CLIs, `--product` on `run_data_products`, and `--help` everywhere.
 
 ## Architecture
 
@@ -54,7 +56,7 @@ When adding a stage, follow the same pattern rather than reading table paths dir
 
 ### Config-driven ingestion
 
-`configs/datasets.json` is the contract per dataset (source glob, reader options, `source_timezone`, validity window, `duplicate_key`, `schema_version`/`rule_version`). `ingest_dataset` chains: `read_source` → `transforms.transform_dataset` (snake_case names, timestamps to UTC, typing, `record_id` hashing) → `validation.validate_dataset` (per-dataset rule lists producing reject/warn code arrays) → `mark_duplicate_rows` → split into `standardized/` and `rejected/` → `write_delta` with read-back row-count verification → a metadata row. Rejected rows keep original values, error codes and lineage.
+`configs/datasets.json` is the contract per dataset (source glob, reader options, `source_timezone`, validity window, `duplicate_key`, `schema_version`/`rule_version`). `ingest_dataset` chains: `read_source` → `transforms.transform_dataset` (snake_case names, timestamps to UTC, typing, `record_id` hashing) → `validation.validate_dataset` (per-dataset rule lists producing reject/warn code arrays) → `mark_duplicate_rows` → split into `standardized/` and `rejected/` → `write_delta` with read-back row-count verification → a monitoring row. Rejected rows keep original values, error codes and lineage.
 
 ### Query layer: one renderer, many SQL files
 
@@ -71,6 +73,10 @@ Products store observed rows only; zero-demand hours are padded at query time fr
 ### Time model
 
 Storage and the Spark session are UTC (`spark.sql.session.timeZone=UTC`); analysis is `America/New_York` from `analysis_timezone`. Hourly calendars in Q3–Q5 are clamped to `load_calendar_coverage()` — the `valid_pickup_start_utc` / `valid_pickup_end_utc_exclusive` window from `configs/datasets.json` — because only inside it does "no trips" mean zero demand. `zoneinfo` needs the pinned `tzdata` on Windows.
+
+### Monitoring
+
+Every stage writes one row per target to `data/delta/metadata/pipeline_runs` through `monitoring.run_row` + `monitoring.record_run`, called from the stage's own success and failure paths. A stage failure always propagates (a failed monitoring write only adds a note); a lost row after a successful stage raises `MonitoringWriteError`. Count semantics and the contract for new stages are in `docs/w3_interfaces.md`: `duplicate_count` means "key already in the target", while in-file duplicates are rejected rows.
 
 ### Spark sessions
 

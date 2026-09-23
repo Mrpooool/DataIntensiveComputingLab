@@ -12,17 +12,10 @@ from uuid import uuid4
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession, functions as F
-from pyspark.sql.types import (
-    DoubleType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
 
 from .ingestion import DATASETS, DEFAULT_DELTA_ROOT, PROJECT_ROOT, write_delta
 from .integration import INTEGRATED_TABLE, INTEGRATION_MANIFEST, publish_integration_snapshot
+from .monitoring import record_run, run_row
 from .queries import DEFAULT_QUERY_CONFIG, integrated_weather_category_sql, load_query_config
 
 
@@ -36,26 +29,6 @@ RESERVED_METADATA_COLUMNS = (
     "created_at_utc",
     "refreshed_at_utc",
     "schema_version",
-)
-REFRESH_METADATA_SCHEMA = StructType(
-    [
-        StructField("run_id", StringType(), False),
-        StructField("product_name", StringType(), False),
-        StructField("data_source", StringType(), False),
-        StructField("source_path", StringType(), False),
-        StructField("source_delta_version", LongType(), False),
-        StructField("source_snapshot_json", StringType(), False),
-        StructField("created_at_utc", TimestampType(), False),
-        StructField("started_at", TimestampType(), False),
-        StructField("finished_at", TimestampType(), False),
-        StructField("execution_seconds", DoubleType(), False),
-        StructField("row_count", LongType(), True),
-        StructField("data_bytes", LongType(), True),
-        StructField("data_files", LongType(), True),
-        StructField("schema_version", StringType(), False),
-        StructField("status", StringType(), False),
-        StructField("error_message", StringType(), True),
-    ]
 )
 
 ProductBuilder = Callable[[SparkSession], DataFrame]
@@ -160,10 +133,6 @@ def register_analytics_inputs(
     return snapshot
 
 
-def _metadata_path(output_root: str | Path) -> Path:
-    return Path(output_root) / "metadata" / "product_refresh_runs"
-
-
 def _utc_from_micros(micros: int) -> datetime:
     return _EPOCH + timedelta(microseconds=int(micros))
 
@@ -193,23 +162,6 @@ def _created_at_frame(
     return spark.createDataFrame([(fallback,)], "created_at_utc timestamp")
 
 
-def _write_refresh_metadata(
-    spark: SparkSession,
-    output_root: str | Path,
-    record: Mapping[str, Any],
-) -> None:
-    path = _metadata_path(output_root)
-    mode = "append" if (path / "_delta_log").exists() else "overwrite"
-    (
-        spark.createDataFrame([dict(record)], REFRESH_METADATA_SCHEMA)
-        .coalesce(1)
-        .write.format("delta")
-        .mode(mode)
-        .option("mergeSchema", "true")
-        .save(str(path))
-    )
-
-
 def _assert_unique_keys(frame: DataFrame, keys: Sequence[str], product_name: str) -> None:
     if not keys:
         return
@@ -235,8 +187,13 @@ def refresh_product(
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
     output_root: str | Path | None = None,
     run_id: str | None = None,
+    monitoring: bool = True,
 ) -> dict[str, Any]:
-    """Build, overwrite, read back, and record one data product."""
+    """Build, overwrite, read back, and record one data product.
+
+    The monitoring row goes to ``<delta_root>/metadata/pipeline_runs`` even when
+    the products live under another ``output_root``.
+    """
     current_run_id = run_id or str(uuid4())
     started_at = _utc_now()
     started = perf_counter()
@@ -253,7 +210,9 @@ def refresh_product(
     row_count: int | None = None
     data_bytes: int | None = None
     data_files: int | None = None
+    output_version: int | None = None
     status = "failed"
+    error: Exception | None = None
     error_message: str | None = None
     refreshed_at = started_at
 
@@ -289,9 +248,11 @@ def refresh_product(
         stats = product_table_stats(spark, output_path)
         data_bytes = stats["data_bytes"]
         data_files = stats["data_files"]
+        output_version = stats["delta_version"]
         status = "success"
-    except Exception as error:
-        error_message = f"{type(error).__name__}: {error}"
+    except Exception as caught:
+        error = caught
+        error_message = f"{type(caught).__name__}: {caught}"
         raise
     finally:
         record = {
@@ -312,7 +273,29 @@ def refresh_product(
             "status": status,
             "error_message": error_message,
         }
-        _write_refresh_metadata(spark, products_root, record)
+        source_versions = {"integrated_taxi_trips": source_version}
+        source_versions.update({
+            f"standardized_{name}": int(value)
+            for name, value in snapshot.get("standardized_versions", {}).items()
+        })
+        row = run_row(
+            run_id=current_run_id,
+            stage="product_refresh",
+            target=product_name,
+            started_at=started_at,
+            execution_seconds=record["execution_seconds"],
+            status=status,
+            error=error,
+            inserted_count=row_count,
+            target_rows_after=row_count,
+            schema_version=record["schema_version"],
+            source_versions=source_versions,
+            output_version=output_version,
+            output_bytes=data_bytes,
+            output_files=data_files,
+        )
+        # On the failure path the product error keeps propagating (see record_run).
+        record_run(spark, row, delta_root, enabled=monitoring, error=error)
     record["refreshed_at_utc"] = refreshed_at
     return record
 
@@ -325,6 +308,8 @@ def refresh_data_products(
     output_root: str | Path | None = None,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
     selected: Sequence[str] | None = None,
+    run_id: str | None = None,
+    monitoring: bool = True,
 ) -> list[dict[str, Any]]:
     """Refresh configured products from one registered integrated snapshot."""
     config = load_product_config(config_path)
@@ -338,7 +323,7 @@ def refresh_data_products(
     if missing:
         raise KeyError(f"No aggregation builder supplied for data products: {missing}")
     snapshot = register_analytics_inputs(spark, delta_root)
-    run_id = str(uuid4())
+    run_id = run_id or str(uuid4())
     products_root = Path(output_root) if output_root is not None else Path(delta_root) / "analytics"
     return [
         refresh_product(
@@ -350,6 +335,7 @@ def refresh_data_products(
             delta_root=delta_root,
             output_root=products_root,
             run_id=run_id,
+            monitoring=monitoring,
         )
         for name in names
     ]

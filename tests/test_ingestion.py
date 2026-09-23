@@ -8,9 +8,10 @@ from pathlib import Path
 
 try:
     from dic_pipeline.ingestion import (
-        METADATA_SCHEMA, _utc_now, create_spark, ingest_batch, ingest_dataset,
+        _utc_now, create_spark, ingest_batch, ingest_dataset,
         read_completed_batch, read_source,
     )
+    from dic_pipeline.monitoring import PIPELINE_RUNS, PIPELINE_RUNS_SCHEMA, run_row
     from dic_pipeline.schemas import RAW_SCHEMAS
     from tests.test_preparation import air_row, taxi_row, weather_row
 
@@ -70,16 +71,27 @@ class IngestionTests(unittest.TestCase):
             rejected = self.spark.read.format("delta").load(
                 str(delta_root / "rejected" / "taxi_zones")
             )
-            metadata = self.spark.read.format("delta").load(
-                str(delta_root / "metadata" / "ingestion_runs")
-            )
+            runs = self.spark.read.format("delta").load(str(delta_root / PIPELINE_RUNS))
 
             self.assertEqual(accepted.count(), 1)
             self.assertEqual(rejected.count(), 2)
             self.assertEqual(record["duplicate_count"], 1)
             self.assertEqual(record["status"], "success")
-            self.assertEqual(metadata.first()["run_id"], "a-test-run")
-            self.assertEqual(metadata.first()["accepted_count"], 1)
+            row = runs.first()
+            self.assertEqual(runs.count(), 1)
+            self.assertEqual((row["run_id"], row["stage"], row["target"]),
+                             ("a-test-run", "ingestion", "taxi_zones"))
+            self.assertEqual(row["processed_count"], 3)
+            self.assertEqual(row["inserted_count"], 1)
+            self.assertEqual(row["rejected_count"], 2)
+            # An in-file duplicate is a rejected row; duplicate_count means "key already in target".
+            self.assertEqual(row["duplicate_count"], 0)
+            self.assertEqual(json.loads(row["validation_failure_counts_json"])["duplicate_record"], 1)
+            self.assertEqual(row["processed_count"], row["inserted_count"] + row["updated_count"]
+                             + row["duplicate_count"] + row["rejected_count"])
+            self.assertTrue(json.loads(row["input_paths_json"])[0].endswith("taxi_zone_lookup.csv"))
+            self.assertEqual(row["output_version"], 0)
+            self.assertGreater(row["output_bytes"], 0)
 
     def test_reader_rejects_swapped_csv_header(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,9 +106,9 @@ class IngestionTests(unittest.TestCase):
     def test_metadata_timestamp_preserves_utc_instant(self):
         now = _utc_now()
         self.assertIsNotNone(now.tzinfo)
-        record = dict(run_id="utc", dataset="taxi", started_at=now, finished_at=now,
-                      execution_seconds=0.0, status="success")
-        frame = self.spark.createDataFrame([record], METADATA_SCHEMA)
+        record = run_row(run_id="utc", stage="ingestion", target="taxi", started_at=now,
+                         execution_seconds=0.0, status="success")
+        frame = self.spark.createDataFrame([record], PIPELINE_RUNS_SCHEMA)
         stored = frame.selectExpr("cast(started_at as double) as epoch").first()["epoch"]
         self.assertAlmostEqual(stored, now.timestamp(), places=5)
 
@@ -160,13 +172,29 @@ class IngestionTests(unittest.TestCase):
                     run_id="failed-test-run",
                 )
 
-            metadata = self.spark.read.format("delta").load(
-                str(root / "delta" / "metadata" / "ingestion_runs")
-            )
-            row = metadata.first()
+            runs = self.spark.read.format("delta").load(str(root / "delta" / PIPELINE_RUNS))
+            row = runs.first()
             self.assertEqual(row["run_id"], "failed-test-run")
             self.assertEqual(row["status"], "failed")
             self.assertIsNotNone(row["error_message"])
+            self.assertIsNone(row["inserted_count"])
+
+    def test_monitoring_switch_writes_no_run_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "raw"
+            data_dir.mkdir()
+            (data_dir / "taxi_zone_lookup.csv").write_text(
+                "LocationID,Borough,Zone,service_zone\n1,Newark Airport,Newark Airport,EWR\n",
+                encoding="utf-8",
+            )
+            record = ingest_dataset(
+                self.spark, "taxi_zones", data_dir=data_dir, delta_root=root / "delta",
+                run_id="quiet", monitoring=False,
+            )
+            self.assertEqual(record["status"], "success")
+            self.assertTrue((root / "delta" / "standardized" / "taxi_zones" / "_delta_log").exists())
+            self.assertFalse((root / "delta" / PIPELINE_RUNS).exists())
 
 
 if __name__ == "__main__":
