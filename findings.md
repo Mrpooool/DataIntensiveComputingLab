@@ -64,3 +64,40 @@ W2 的独立审查（W2-REVIEW-20260919）确认了 A/B 的五项问题，五项
 - 决定性的数据特征是坍缩比：955 万行程坍缩到 2,183 个小时、265 个 Zone、6 个天气类别，比输入小四到五个数量级。这个形状回报物化和分区合并，留给扫描层优化的空间很小。
 - 四张产品合计 0.172 MB，占整合表的 0.016%，但全量刷新要 142.5 秒。物化的理由是重复出报表，不是单次查询变快。
 - 以上均为单机、`local[4]`、单一数据量、每组三次测量的结果；十城扩展的建议是基于数据形状的外推。详见 [W2 benchmark report](docs/w2_benchmark_report.md)。
+
+## 2026-09-24 W3 监控与评测设计依据
+
+方案先经子 agent 对照作业、计划与全部相关代码审查；标注“实测”的条目由它在本机 Spark 4.2.0 / Delta 4.4.0 上验证，其余为代码阅读结论。
+
+### 现有代码对增量更新的限制
+
+| 发现 | 位置 | 影响 |
+| --- | --- | --- |
+| 有效上车时间窗口写死为 2024-01-01 05:00 至 2024-04-01 04:00（UTC） | `configs/datasets.json:10-11`，`validation.py:68-80` | 作业要求的新行程全部晚于原数据，会被整批标成 `timestamp_outside_source_period`；Q3-Q5 的日历窗口 `load_calendar_coverage` 读的也是它 |
+| `mark_duplicate_rows` 只在同一 DataFrame 内开窗 | `validation.py:203-223` | 从原数据复制过来的 1-2% 重复行程发现不了，必须对目标表做 anti-join 或 MERGE |
+| `verify_integrated_provenance` 要求整合表只有一个 `run_id` | `integration.py:138-153` | 增量追加后必然有多个，需要改成 lineage 子集检查 |
+| `ingest_dataset` 进入时就删除 `completed_batch.json` | `ingestion.py` | 增量路径不能照搬，必须原子重写四表版本 |
+| Taxi 的 `record_id` 对行值做哈希 | `transforms.py:69-99` | 修正过的行程得到新 id，只能算插入；`updated_count` 只对按小时分键的 Weather / Air 有意义 |
+
+### Spark / Delta 行为（实测）
+
+- 固定 Schema 读取多一列 `humidity` 的 CSV：`count()` 能通过（列裁剪跳过表头检查），`collect()` 报 `FAILED_READ_FILE`。只跑 `count()` 的冒烟测试会给出假阳性。
+- Delta MERGE 的 `execute()` 直接返回 `num_inserted_rows` / `num_updated_rows` 等计数；同一文件再 MERGE 一次插入 0 行。增量阶段拿计数不需要额外扫描。
+- `RESTORE` 能让快照回到基线，但不删除文件，版本号继续增长：玩具表的快照字节 838,571 → 923,770 → 838,571，磁盘字节 849 KB → 940 KB → 968 KB。用 RESTORE 在评测重复之间重置会污染存储数字，所以改为每次复制基线。
+- `vacuum(0)` 默认被拒（`DELTA_VACUUM_RETENTION_PERIOD_TOO_SHORT`）。评测不在重复之间 VACUUM；生产环境按 7 天保留期回答存储问题。
+
+### 采用的设计决定
+
+| 决定 | 理由 |
+| --- | --- |
+| 一张 `pipeline_runs` 表，替换两张旧表，不做视图 | 没有 metastore，临时视图不持久；双写会虚增监控开销，也会有两个事实来源 |
+| `duplicate_count` 只指“目标表已有而跳过”，批内重复算拒绝行 | W1 口径下重复是拒绝的子集，增量忽略的重复又不落盘，混在一列里守恒式不成立 |
+| 普通函数 `run_row` + `record_run`，不用上下文管理器 | 现有调用点都有自己的 try/except；也符合 AGENTS.md 的“不做投机抽象” |
+| 阶段失败时抛阶段异常并附 note；阶段成功但监控行丢失时抛 `MonitoringWriteError` | 监控错误不是业务失败的原因，不能用 `raise ... from`；成功后丢的行无法重算，不能只打日志 |
+| 关掉监控只省掉行写入和只为监控取的元数据；按错误码计数照常执行 | 按码计数是 Task 4 要求的“报告无效记录”，属于校验；子 agent 建议把它算进监控，未采纳 |
+| 每次评测运行用新路径 | 避免 Delta 按路径缓存的日志看到被换回旧版本的表（预防措施，未实测复现） |
+| 去掉原方案的 `context` 列 | 评测都跑在复制目录里，监控行本来就不会进真实表；run_id 已带评测标记 |
+
+### 真实数据上的监控结果
+
+`--import-legacy` 导入的 W1/W2 历史：Taxi 拒绝 202 行（`dropoff_before_pickup` 180、`timestamp_outside_source_period` 21、`duplicate_record` 1）；最慢为 Taxi 摄入 156.8 秒，其次是 `daily_mobility_summary` 刷新 48.7 秒。每个目标只有一次历史运行，趋势查询要等评测或增量运行积累数据。

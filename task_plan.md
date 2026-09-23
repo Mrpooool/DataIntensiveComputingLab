@@ -1,6 +1,6 @@
 # 项目执行方案
 
-依据：[课程要求](Assignment.md)。W1、W2 已完成；当前进入 W3 方案阶段。
+依据：[课程要求](Assignment.md)。W1、W2 已完成；W3 实现中：C 的阶段 ① 已完成，A、B 尚未开始。
 
 ## W1 完成总结
 
@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | A：数据产品与运行入口 | 四张汇总表、刷新元数据、CLI、配置 | 已合 `main`（PR #4）；审查修复后环境产品口径与 Q1–Q6 对齐 |
 | B：分析口径与查询 | Q1–Q6 Spark SQL、统计规则、小样本测试 | 已合 `main`（PR #5）；设计说明见 `docs/role_b_query_design.md` |
-| C：优化与 benchmark | 缓存 / 分区裁剪 / 广播 / AQE；结果核对与计时 | 13 项实验完成；`docs/w2_benchmark_report.md`、`docs/w2_design_optimization.md` 已写；在 `c/pipeline-fixes` |
+| C：优化与 benchmark | 缓存 / 分区裁剪 / 广播 / AQE；结果核对与计时 | 13 项实验完成；`docs/w2_benchmark_report.md`、`docs/w2_design_optimization.md` 已写；已合 `main`（PR #7） |
 
 要点：审查五项问题已修；完整回归 55 项通过；全量实验运行 `20260919T143454Z-9d921a51`。W2 口径与产品接口是 W3 增量刷新的基线，不可无说明地改动。
 
@@ -68,13 +68,15 @@ W2 的六个查询与四张产品在增量与 Schema 演进后仍须正确、尽
 
 ## 3. 平台监控（C）
 
-每次管道执行自动写入监控元数据（建议 Delta 表，路径拟为 `data/delta/metadata/pipeline_runs/` 或拆分多表）。至少记录：
+每次管道执行自动写入监控元数据（已定为单表 `data/delta/metadata/pipeline_runs/`，取代 W1/W2 的 `ingestion_runs` 与 `product_refresh_runs`）。至少记录：
 
 - 管道执行时间、处理行数、插入行数、拒绝行数、Schema 版本、校验失败计数。
 
 提供 Spark SQL（或薄封装）回答：哪类数据集最常校验失败、谁最耗时、每次拒绝多少行、多次执行耗时如何变化。
 
 C 在报告中讨论：哪些指标最有用、如何支撑排障与维护、生产环境还缺什么。监控写入失败不得静默吞掉业务失败状态。A 的增量管道与产品刷新须回传约定计数，供 C 写入监控表。
+
+**现状（`bfe33a2`）**：表、写入接口（`run_row` + `record_run`）、五条运维 SQL（`scripts.run_monitoring_report`）已完成，摄入、整合、产品刷新已接入；A 的 `incremental_update` 阶段按 [docs/w3_interfaces.md](docs/w3_interfaces.md) 写入同一张表。计数口径：`processed = inserted + updated + duplicate + rejected`，其中 `duplicate` 只指目标表中已存在的键。
 
 ## 4. 扩展校验框架（B）
 
@@ -90,7 +92,9 @@ C 在报告中讨论：哪些指标最有用、如何支撑排障与维护、生
 
 - 增量更新耗时、分析刷新耗时、更新后存储开销、校验额外耗时、监控额外耗时。
 
-讨论（须用实测与实现例子）：W1 哪些设计简化了维护、改动最大的组件、对未来新数据集的支持程度、若今日重做会改什么。评测入口拟为 `scripts/run_w3_evaluation.py`，结果写入 `data/benchmark/w3/<run_id>/`。
+讨论（须用实测与实现例子）：W1 哪些设计简化了维护、改动最大的组件、对未来新数据集的支持程度、若今日重做会改什么。评测入口为 `scripts/run_w3_evaluation.py`，结果写入 `data/benchmark/w3/<run_id>/`。
+
+**现状（`bfe33a2`）**：骨架完成。每次运行（含预热）都复制一份基线到独立目录，变体交替，输出计数不一致不报时间。三项监控开销可测；`incremental_update`、`analytical_refresh`、`storage_overhead`、`validation_overhead` 为 pending，等 A 的 `apply_updates` / `refresh_data_products(mode=)` 与 B 的 `validate` 开关。
 
 C 同时负责最终联调、英文/中文 README、设计报告与 evaluation report 整合、提交包。
 
@@ -100,7 +104,7 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | --- | --- |
 | B → A/C：规则接口 | 校验规则注册方式、拒绝原因码、Schema 演进允许列表、各产品刷新边界（增量键 / 必须全量条件） |
 | A → B/C：增量与产品接口 | 更新文件路径与格式、增量管道入口、写入后的批次/版本 manifest、产品刷新 CLI、整合表是否重跑及版本发布方式 |
-| C → A/B：运维与评测接口 | 监控表 Schema 与写入 API、运维查询入口、评测脚本如何读取增量/刷新/监控耗时 |
+| C → A/B：运维与评测接口 | 监控表 Schema 与写入 API、运维查询入口、评测脚本如何读取增量/刷新/监控耗时（已写入 [docs/w3_interfaces.md](docs/w3_interfaces.md)） |
 
 建议模块：`incremental.py` / 更新文件生成与扩展 `data_products`（A）、扩展 `validation`（B）、`monitoring.py` + 评测脚本与交付汇总（C）。保持普通函数与配置驱动，不另搭框架。
 
@@ -118,8 +122,28 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 - [ ] 三份增量更新文件可生成，并记录新行/重复行/Schema 变更。
 - [ ] 增量管道：插入新行、忽略重复、保留未变行、支持约定内 Schema 演进，且不整库重建。
 - [ ] 受影响分析产品可刷新；查询在演进后仍兼容或有明确迁移；无效记录不进入产品。
-- [ ] 监控表记录约定字段，并有 SQL/入口回答课程四个运维问题。
+- [x] 监控表记录约定字段，并有 SQL/入口回答课程四个运维问题（`bfe33a2`；增量阶段的行待 A 接入）。
 - [ ] 校验框架可扩展，通用与专用规则边界清晰。
 - [ ] 评测覆盖增量、刷新、存储、校验、监控五类开销，结论有实测支撑。
 - [ ] 受影响测试通过；改共享模块时跑完整测试；交付前 `git diff --check`。
 - [ ] 提交完整代码/配置/测试、3–5 页英文设计报告、简短英文 evaluation report、简洁英文 README；同步中文 README。
+
+## W3 C 阶段状态
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| C① 监控最小链路 | `pipeline_runs` 表、写入接口、三处阶段接入、`--no-monitoring` | complete（`bfe33a2`） |
+| C② 运维查询与评测骨架 | 五条 SQL、`--import-legacy`、`w3_evaluation.py` 与 CLI、pending 机制 | complete（`bfe33a2`） |
+| C③ 接口对齐 | 把 [docs/w3_interfaces.md](docs/w3_interfaces.md) 发给 A、B，确认标 **agree** 的条目；时间窗口一条最先定 | in_progress |
+| C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | pending（等 A 的 manifest 形状） |
+| C⑤ 全量评测 | 先跑三项监控开销；A/B 交付后跑其余四项 | pending |
+| C⑥ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
+
+分支 `c/w3-monitoring` 只在本地，按约定整周做完再统一提 PR。
+
+## W3 C 遇到的错误
+
+| 错误 | 尝试次数 | 解决方案 |
+| --- | --- | --- |
+| 用切片脚本删除 `REFRESH_METADATA_SCHEMA` 时吞掉了一个空格，得到 `ProductBuilder =Callable` | 1 | `git diff` 审阅时发现，用 sed 修正；语法本身合法，测试未受影响 |
+| Bash 中 `cd` 进 `sql/monitoring/` 后工作目录被保留，后续相对路径命令落在错误目录 | 1 | 之后的命令都先 `cd` 到仓库根目录的绝对路径 |
