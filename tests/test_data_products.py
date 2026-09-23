@@ -17,6 +17,7 @@ from dic_pipeline.data_products import (
     register_analytics_inputs,
 )
 from dic_pipeline.ingestion import DATASETS, create_spark, write_delta
+from dic_pipeline.monitoring import PIPELINE_RUNS
 
 
 TRIP_SCHEMA = (
@@ -92,6 +93,9 @@ class DataProductTests(unittest.TestCase):
 
     def _read(self, root: Path, product: str):
         return self.spark.read.format("delta").load(str(root / "analytics" / product))
+
+    def _runs(self, root: Path):
+        return self.spark.read.format("delta").load(str(root / PIPELINE_RUNS))
 
     def test_registers_exact_published_versions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -219,9 +223,14 @@ class DataProductTests(unittest.TestCase):
             self.assertEqual(created_after_first, created_after_second)
             self.assertEqual({row.created_at_utc for row in output.collect()}, {created_after_first})
             self.assertEqual(first["created_at_utc"], second["created_at_utc"])
-            metadata = self._read(root, "metadata/product_refresh_runs")
-            self.assertEqual(metadata.count(), 2)
-            self.assertEqual({row.status for row in metadata.collect()}, {"success"})
+            runs = self._runs(root).collect()
+            self.assertEqual(len(runs), 2)
+            self.assertEqual({row.status for row in runs}, {"success"})
+            self.assertEqual({(row.stage, row.target) for row in runs},
+                             {("product_refresh", "daily_mobility_summary")})
+            self.assertEqual({row.inserted_count for row in runs}, {5})
+            self.assertEqual({row.output_version for row in runs}, {0, 1})
+            self.assertEqual(json.loads(runs[0].source_versions_json)["integrated_taxi_trips"], 0)
 
     def test_metadata_timestamps_are_real_utc_instants(self):
         # On a host that is not in UTC, naive datetimes used to land shifted by the host offset.
@@ -248,12 +257,13 @@ class DataProductTests(unittest.TestCase):
             self.assertEqual(len(product), 1)
             self.assertTrue(before <= product[0].created <= product[0].refreshed <= after)
 
-            audit = self._read(root, "metadata/product_refresh_runs").select(
-                F.unix_micros("created_at_utc").alias("created"),
+            audit = self._runs(root).select(
                 F.unix_micros("started_at").alias("started"),
                 F.unix_micros("finished_at").alias("finished"),
             ).first()
-            self.assertTrue(before <= audit.started <= audit.created <= audit.finished <= after)
+            self.assertTrue(
+                before <= audit.started <= micros(record["created_at_utc"]) <= audit.finished <= after
+            )
 
     def test_failed_refresh_is_recorded_and_missing_snapshot_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -275,8 +285,8 @@ class DataProductTests(unittest.TestCase):
                     settings={"schema_version": "1.0.0", "keys": ["pickup_hour_utc"]},
                     delta_root=root,
                 )
-            metadata = self._read(root, "metadata/product_refresh_runs")
-            row = metadata.first()
+            row = self._runs(root).first()
+            self.assertEqual((row.stage, row.target), ("product_refresh", "daily_mobility_summary"))
             self.assertEqual(row.status, "failed")
             self.assertIn("broken product", row.error_message)
 

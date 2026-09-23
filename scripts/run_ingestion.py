@@ -20,6 +20,8 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("data/raw"))
     parser.add_argument("--output-root", type=Path, default=Path("data/delta"))
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--no-monitoring", action="store_true",
+                        help="Do not write metadata/pipeline_runs (for overhead measurements).")
     parser.add_argument("--master", default="local[4]")
     parser.add_argument("--driver-memory", default="4g")
     parser.add_argument("--shuffle-partitions", type=int, default=128)
@@ -33,7 +35,10 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
     try:
-        options = dict(data_dir=args.data_dir, delta_root=args.output_root, run_id=run_id)
+        options = dict(
+            data_dir=args.data_dir, delta_root=args.output_root, run_id=run_id,
+            monitoring=not args.no_monitoring,
+        )
         if args.dataset == "all":
             records = ingest_batch(spark, **options)
         else:
