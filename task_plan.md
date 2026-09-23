@@ -136,7 +136,7 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | C② 运维查询与评测骨架 | 五条 SQL、`--import-legacy`、`w3_evaluation.py` 与 CLI、pending 机制 | complete（`bfe33a2`） |
 | C③ 接口对齐 | 把 [docs/w3_interfaces.md](docs/w3_interfaces.md) 发给 A、B，确认标 **agree** 的条目；时间窗口一条最先定 | in_progress |
 | C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | pending（等 A 的 manifest 形状） |
-| C⑤ 全量评测 | 先跑三项监控开销；A/B 交付后跑其余四项 | pending |
+| C⑤ 全量评测 | A/B 交付后在同一代码版本上一次跑完全部七项，监控开销也不提前单跑（摄入代码还会变） | pending |
 | C⑥ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
 
 分支 `c/w3-monitoring` 只在本地，按约定整周做完再统一提 PR。

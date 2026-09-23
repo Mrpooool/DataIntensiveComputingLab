@@ -55,5 +55,5 @@
 下一步：
 
 1. 把 [docs/w3_interfaces.md](docs/w3_interfaces.md) 发给 A、B 确认，时间窗口一条最先定，否则 A 生成的 Taxi 更新会被整批拒绝。
-2. 在全量数据上跑三项监控开销（`python -m scripts.run_w3_evaluation --measurement monitoring_overhead_ingestion` 等），预计 40-60 分钟。
-3. A 的 manifest 定型后放宽 `verify_integrated_provenance`；A/B 交付后跑其余四项评测。
+2. A 的 manifest 定型后放宽 `verify_integrated_provenance`。
+3. A/B 交付后，在同一代码版本上一次跑完全部七项评测。监控开销现在就能测，但 B 的校验扩展和 A 的增量路径都会改动摄入代码，提前测的数字到时还得重跑。
