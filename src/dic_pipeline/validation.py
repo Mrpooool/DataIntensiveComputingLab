@@ -11,6 +11,38 @@ from pyspark.sql import Column, DataFrame, Window, functions as F
 Rule = tuple[str, Column]
 
 
+def check_schema(
+    actual_columns: Sequence[str],
+    expected_schema: Sequence[str],
+    policy: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compare source columns to the contract; return (accepted, unsupported) changes.
+
+    Role B owns the full policy. Role A uses this to accept additive columns such as
+    ``humidity`` / ``aqi`` listed in ``policy['allow_add']`` when reading update CSVs.
+    Missing required columns and any other unexpected change are unsupported.
+    """
+    policy = dict(policy or {})
+    allow_add = {str(name) for name in policy.get("allow_add", ())}
+    actual = list(actual_columns)
+    expected = list(expected_schema)
+    expected_set = set(expected)
+    actual_set = set(actual)
+    missing = sorted(expected_set - actual_set)
+    extra = sorted(actual_set - expected_set)
+    accepted: list[dict[str, Any]] = []
+    unsupported: list[dict[str, Any]] = []
+    for name in missing:
+        unsupported.append({"op": "remove", "column": name})
+    for name in extra:
+        change = {"op": "add", "column": name, "type": "double", "nullable": True}
+        if name in allow_add:
+            accepted.append(change)
+        else:
+            unsupported.append(change)
+    return accepted, unsupported
+
+
 def _any(conditions: Sequence[Column]) -> Column:
     return reduce(or_, conditions, F.lit(False))
 

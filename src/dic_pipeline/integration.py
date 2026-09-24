@@ -143,16 +143,26 @@ def verify_integrated_provenance(
     table_path: str | Path,
     source_batch: Mapping[str, Any],
 ) -> None:
-    """Refuse to pair an integrated table with a completed batch it was not built from."""
-    run_ids = sorted(
-        row.run_id
+    """Refuse to pair an integrated table with a completed batch it was not built from.
+
+    After incremental appends the table may carry several ingestion ``run_id`` values.
+    The batch manifest then lists them in ``lineage``; the check is
+    ``set(table run_ids) ⊆ set(lineage)`` with ``lineage[-1] == run_id``.
+    """
+    run_ids = {
+        str(row.run_id)
         for row in spark.read.format("delta").load(str(table_path)).select("run_id").distinct().collect()
-    )
+    }
     expected = str(source_batch["run_id"])
-    if run_ids != [expected]:
+    lineage = [str(value) for value in source_batch.get("lineage") or [expected]]
+    if lineage[-1] != expected:
         raise RuntimeError(
-            f"Integrated table {table_path} carries ingestion run(s) {run_ids}, not the completed "
-            f"batch {expected!r}. Run scripts.run_integration on the current batch first."
+            f"Batch lineage must end with run_id {expected!r}, got {lineage!r}."
+        )
+    if not run_ids.issubset(set(lineage)):
+        raise RuntimeError(
+            f"Integrated table {table_path} carries ingestion run(s) {sorted(run_ids)}, which are not "
+            f"a subset of lineage {lineage}. Run scripts.run_integration or apply_updates first."
         )
 
 

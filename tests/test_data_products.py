@@ -290,6 +290,89 @@ class DataProductTests(unittest.TestCase):
             self.assertEqual(row.status, "failed")
             self.assertIn("broken product", row.error_message)
 
+    def test_hour_product_incremental_merge_equals_full(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._fixture(root)
+            refresh_data_products(
+                self.spark,
+                DEFAULT_PRODUCT_BUILDERS,
+                delta_root=root,
+                selected=["daily_mobility_summary", "air_quality_impact_summary"],
+                monitoring=False,
+                mode="full",
+            )
+            before_daily = self._read(root, "daily_mobility_summary").count()
+            hour_new = utc(2024, 4, 2, 16)
+            new_trip = (
+                "t6", "batch-2", hour_new, 161, "Midtown Center", "Manhattan", True,
+                4.0, 180, 12.0, True, 1, True, 11.0,
+            )
+            write_delta(
+                self.spark.createDataFrame([new_trip], TRIP_SCHEMA),
+                root / "integrated" / "integrated_taxi_trips",
+                mode="append",
+                num_files=1,
+            )
+            batch2 = {
+                "run_id": "batch-2",
+                "lineage": ["batch-1", "batch-2"],
+                "versions": {dataset: 0 for dataset in DATASETS},
+            }
+            (root / "metadata" / "completed_batch.json").write_text(
+                json.dumps(batch2), encoding="utf-8"
+            )
+            publish_integration_snapshot(self.spark, root, source_batch=batch2)
+            (root / "metadata" / "last_update_affects.json").write_text(
+                json.dumps({
+                    "run_id": "batch-2",
+                    "datasets": ["taxi"],
+                    "products": [
+                        "daily_mobility_summary",
+                        "taxi_zone_statistics",
+                        "weather_impact_summary",
+                        "air_quality_impact_summary",
+                    ],
+                    "integrated_inserted": 1,
+                }),
+                encoding="utf-8",
+            )
+
+            auto = refresh_data_products(
+                self.spark,
+                DEFAULT_PRODUCT_BUILDERS,
+                delta_root=root,
+                monitoring=False,
+                mode="auto",
+            )
+            by_name = {item["product_name"]: item for item in auto}
+            self.assertEqual(by_name["daily_mobility_summary"]["refresh_mode"], "incremental")
+            self.assertEqual(by_name["air_quality_impact_summary"]["refresh_mode"], "incremental")
+            self.assertEqual(by_name["taxi_zone_statistics"]["refresh_mode"], "full")
+            self.assertEqual(by_name["weather_impact_summary"]["refresh_mode"], "full")
+            self.assertEqual(by_name["daily_mobility_summary"]["inserted_count"], 1)
+            self.assertEqual(
+                self._read(root, "daily_mobility_summary").count(), before_daily + 1
+            )
+
+            metrics = [
+                "pickup_hour_utc", "trip_count", "distance_sum", "valid_distance_count",
+                "duration_sum", "valid_duration_count",
+            ]
+            after_inc = self._read(root, "daily_mobility_summary").select(*metrics)
+            full = refresh_data_products(
+                self.spark,
+                DEFAULT_PRODUCT_BUILDERS,
+                delta_root=root,
+                selected=["daily_mobility_summary"],
+                monitoring=False,
+                mode="full",
+            )[0]
+            self.assertEqual(full["refresh_mode"], "full")
+            after_full = self._read(root, "daily_mobility_summary").select(*metrics)
+            self.assertEqual(after_inc.exceptAll(after_full).count(), 0)
+            self.assertEqual(after_full.exceptAll(after_inc).count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

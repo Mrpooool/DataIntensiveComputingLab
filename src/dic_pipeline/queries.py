@@ -200,13 +200,39 @@ def load_query_config(path: str | Path = DEFAULT_QUERY_CONFIG) -> dict[str, Any]
 
 def load_calendar_coverage(
     config_path: str | Path = DEFAULT_DATASET_CONFIG,
+    *,
+    delta_root: str | Path | None = None,
 ) -> tuple[str, str]:
     """The validated Taxi pickup window [start, end) in UTC.
 
     Ingestion rejects trips outside this window, so it is the only period in
     which an hour without trips can be read as zero demand. The hourly calendars
     in Q3-Q5 never extend past it, whatever range a caller requests.
+
+    After incremental updates, ``apply_updates`` may publish
+    ``metadata/coverage_window.json`` under the Delta root; that file wins when
+    present so Q3–Q5 cover the extended period.
     """
+    roots: list[Path] = []
+    if delta_root is not None:
+        roots.append(Path(delta_root))
+    from .ingestion import DEFAULT_DELTA_ROOT
+
+    roots.append(Path(DEFAULT_DELTA_ROOT))
+    for root in roots:
+        window_path = root / "metadata" / "coverage_window.json"
+        if window_path.exists():
+            payload = json.loads(window_path.read_text(encoding="utf-8"))
+            start = str(payload["valid_pickup_start_utc"])
+            end = str(payload["valid_pickup_end_utc_exclusive"])
+            for label, value in (("start", start), ("end", end)):
+                parsed = datetime.strptime(value, _UTC_HOUR_FORMAT)
+                if parsed.minute or parsed.second:
+                    raise ValueError(f"coverage_window {label} must fall on a whole UTC hour.")
+            if start >= end:
+                raise ValueError("coverage_window start must be earlier than end.")
+            return start, end
+
     contract = load_dataset_config("taxi", config_path)
     bounds = []
     for key in ("valid_pickup_start_utc", "valid_pickup_end_utc_exclusive"):
