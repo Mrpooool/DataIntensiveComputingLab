@@ -30,8 +30,14 @@ RESERVED_METADATA_COLUMNS = (
     "refreshed_at_utc",
     "schema_version",
 )
+# Hour-grained products: mode=auto MERGEs dirty pickup_hour_utc keys only.
+INCREMENTAL_HOUR_PRODUCTS = frozenset({
+    "daily_mobility_summary",
+    "air_quality_impact_summary",
+})
+HOUR_KEY = "pickup_hour_utc"
 
-ProductBuilder = Callable[[SparkSession], DataFrame]
+ProductBuilder = Callable[..., DataFrame]
 
 
 def _utc_now() -> datetime:
@@ -177,6 +183,61 @@ def _schema_signature(frame: DataFrame) -> list[tuple[str, str]]:
     return [(field.name, field.dataType.simpleString()) for field in frame.schema.fields]
 
 
+def _latest_batch_run_id(snapshot: Mapping[str, Any]) -> str | None:
+    batch = snapshot.get("completed_batch")
+    if isinstance(batch, dict) and batch.get("run_id"):
+        return str(batch["run_id"])
+    if snapshot.get("run_id"):
+        return str(snapshot["run_id"])
+    return None
+
+
+def _enrich_product(
+    product: DataFrame,
+    *,
+    created_at_frame: DataFrame,
+    source_version: int,
+    refreshed_at: datetime,
+    schema_version: str,
+) -> DataFrame:
+    return (
+        product.crossJoin(created_at_frame)
+        .withColumn("data_source", F.lit("integrated_taxi_trips"))
+        .withColumn("source_delta_version", F.lit(source_version).cast("long"))
+        .withColumn("refreshed_at_utc", F.lit(refreshed_at))
+        .withColumn("schema_version", F.lit(schema_version))
+    )
+
+
+def _dirty_hour_keys(
+    spark: SparkSession,
+    product_name: str,
+    product_path: Path,
+    latest_run_id: str,
+) -> DataFrame:
+    """Hours touched by the latest integrated run, plus any hour missing from the product."""
+    if product_name == "air_quality_impact_summary":
+        trips = _nyc_trips(spark)
+    else:
+        trips = _trips(spark)
+    from_latest = (
+        trips.where(F.col("run_id") == latest_run_id).select(HOUR_KEY).distinct()
+    )
+    existing = spark.read.format("delta").load(str(product_path)).select(HOUR_KEY).distinct()
+    missing = trips.select(HOUR_KEY).distinct().join(existing, HOUR_KEY, "left_anti")
+    return from_latest.unionByName(missing).distinct()
+
+
+def _build_hour_slice(spark: SparkSession, product_name: str, dirty_hours: DataFrame) -> DataFrame:
+    if product_name == "daily_mobility_summary":
+        scope = _trips(spark).join(dirty_hours, HOUR_KEY, "inner")
+        return build_daily_mobility_summary(spark, trips=scope)
+    if product_name == "air_quality_impact_summary":
+        scope = _nyc_trips(spark).join(dirty_hours, HOUR_KEY, "inner")
+        return build_air_quality_impact_summary(spark, trips=scope)
+    raise KeyError(f"Product {product_name!r} does not support hour-key incremental refresh.")
+
+
 def refresh_product(
     spark: SparkSession,
     product_name: str,
@@ -188,17 +249,30 @@ def refresh_product(
     output_root: str | Path | None = None,
     run_id: str | None = None,
     monitoring: bool = True,
+    refresh_mode: str = "full",
 ) -> dict[str, Any]:
-    """Build, overwrite, read back, and record one data product.
+    """Build or incrementally MERGE one data product, then record monitoring.
 
-    The monitoring row goes to ``<delta_root>/metadata/pipeline_runs`` even when
-    the products live under another ``output_root``.
+    ``refresh_mode='full'`` overwrites the product. ``refresh_mode='incremental'``
+    is supported for :data:`INCREMENTAL_HOUR_PRODUCTS`: recompute dirty
+    ``pickup_hour_utc`` keys from the latest integrated ``run_id`` (and any hours
+    still missing from the product) and MERGE them. Falls back to a full rebuild
+    when the product table does not exist yet.
     """
+    if refresh_mode not in ("full", "incremental"):
+        raise ValueError("refresh_mode must be 'full' or 'incremental'")
     current_run_id = run_id or str(uuid4())
     started_at = _utc_now()
     started = perf_counter()
     root = Path(delta_root)
     products_root = Path(output_root) if output_root is not None else root / "analytics"
+    output_path = products_root / product_name
+    product_exists = (output_path / "_delta_log").exists()
+    effective_mode = refresh_mode
+    if effective_mode == "incremental" and (
+        product_name not in INCREMENTAL_HOUR_PRODUCTS or not product_exists
+    ):
+        effective_mode = "full"
     created_at_frame = _created_at_frame(spark, products_root, product_name, started_at)
     # Read the epoch, not a collected datetime: collect() renders host-local naive values.
     created_at = _utc_from_micros(
@@ -208,6 +282,9 @@ def refresh_product(
     source_path = str(snapshot.get("integrated_path") or root / "integrated" / "integrated_taxi_trips")
     source_snapshot_json = json.dumps(dict(snapshot), sort_keys=True, default=str)
     row_count: int | None = None
+    inserted_count: int | None = None
+    updated_count: int | None = None
+    target_rows_before: int | None = None
     data_bytes: int | None = None
     data_files: int | None = None
     output_version: int | None = None
@@ -215,41 +292,114 @@ def refresh_product(
     error: Exception | None = None
     error_message: str | None = None
     refreshed_at = started_at
+    keys = list(settings.get("keys") or [])
+    schema_version = str(settings["schema_version"])
 
     try:
-        product = builder(spark)
-        if not isinstance(product, DataFrame):
-            raise TypeError(f"Builder for {product_name!r} must return a Spark DataFrame.")
-        conflicts = sorted(set(product.columns).intersection(RESERVED_METADATA_COLUMNS))
-        if conflicts:
-            raise ValueError(f"Product {product_name!r} uses reserved columns: {conflicts}")
-        refreshed_at = _utc_now()
-        enriched = (
-            product.crossJoin(created_at_frame)
-            .withColumn("data_source", F.lit("integrated_taxi_trips"))
-            .withColumn("source_delta_version", F.lit(source_version).cast("long"))
-            .withColumn("refreshed_at_utc", F.lit(refreshed_at))
-            .withColumn("schema_version", F.lit(str(settings["schema_version"])))
-        )
-        _assert_unique_keys(enriched, list(settings.get("keys") or []), product_name)
-        row_count = enriched.count()
-        output_path = products_root / product_name
-        write_delta(
-            enriched,
-            output_path,
-            num_files=int(settings.get("output_files", 1)),
-        )
-        written = spark.read.format("delta").load(str(output_path))
-        if written.count() != row_count:
-            raise RuntimeError(f"Read-back row count failed for {product_name!r}.")
-        if _schema_signature(written) != _schema_signature(enriched):
-            raise RuntimeError(f"Read-back schema failed for {product_name!r}.")
-        _assert_unique_keys(written, list(settings.get("keys") or []), product_name)
-        stats = product_table_stats(spark, output_path)
-        data_bytes = stats["data_bytes"]
-        data_files = stats["data_files"]
-        output_version = stats["delta_version"]
-        status = "success"
+        if effective_mode == "incremental":
+            latest_run = _latest_batch_run_id(snapshot)
+            if latest_run is None:
+                effective_mode = "full"
+            else:
+                target_rows_before = spark.read.format("delta").load(str(output_path)).count()
+                dirty = _dirty_hour_keys(spark, product_name, output_path, latest_run)
+                if dirty.limit(1).count() == 0:
+                    inserted_count = 0
+                    updated_count = 0
+                    row_count = target_rows_before
+                else:
+                    slice_frame = _build_hour_slice(spark, product_name, dirty)
+                    if not isinstance(slice_frame, DataFrame):
+                        raise TypeError(
+                            f"Builder for {product_name!r} must return a Spark DataFrame."
+                        )
+                    conflicts = sorted(
+                        set(slice_frame.columns).intersection(RESERVED_METADATA_COLUMNS)
+                    )
+                    if conflicts:
+                        raise ValueError(
+                            f"Product {product_name!r} uses reserved columns: {conflicts}"
+                        )
+                    refreshed_at = _utc_now()
+                    enriched = _enrich_product(
+                        slice_frame,
+                        created_at_frame=created_at_frame,
+                        source_version=source_version,
+                        refreshed_at=refreshed_at,
+                        schema_version=schema_version,
+                    )
+                    _assert_unique_keys(enriched, keys, product_name)
+                    existing_keys = (
+                        spark.read.format("delta")
+                        .load(str(output_path))
+                        .select(HOUR_KEY)
+                        .distinct()
+                    )
+                    new_keys = enriched.select(HOUR_KEY).join(
+                        existing_keys, HOUR_KEY, "left_anti"
+                    )
+                    inserted_count = new_keys.count()
+                    updated_count = enriched.count() - inserted_count
+                    spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+                    (
+                        DeltaTable.forPath(spark, str(output_path))
+                        .alias("t")
+                        .merge(enriched.alias("s"), f"t.{HOUR_KEY} = s.{HOUR_KEY}")
+                        .whenMatchedUpdateAll()
+                        .whenNotMatchedInsertAll()
+                        .execute()
+                    )
+                    written = spark.read.format("delta").load(str(output_path))
+                    row_count = written.count()
+                    if target_rows_before + inserted_count != row_count:
+                        raise RuntimeError(
+                            f"Incremental row invariant failed for {product_name!r}: "
+                            f"before={target_rows_before} inserted={inserted_count} "
+                            f"after={row_count}."
+                        )
+                    _assert_unique_keys(written, keys, product_name)
+                stats = product_table_stats(spark, output_path)
+                data_bytes = stats["data_bytes"]
+                data_files = stats["data_files"]
+                output_version = stats["delta_version"]
+                status = "success"
+
+        if effective_mode == "full":
+            product = builder(spark)
+            if not isinstance(product, DataFrame):
+                raise TypeError(f"Builder for {product_name!r} must return a Spark DataFrame.")
+            conflicts = sorted(set(product.columns).intersection(RESERVED_METADATA_COLUMNS))
+            if conflicts:
+                raise ValueError(f"Product {product_name!r} uses reserved columns: {conflicts}")
+            refreshed_at = _utc_now()
+            enriched = _enrich_product(
+                product,
+                created_at_frame=created_at_frame,
+                source_version=source_version,
+                refreshed_at=refreshed_at,
+                schema_version=schema_version,
+            )
+            _assert_unique_keys(enriched, keys, product_name)
+            row_count = enriched.count()
+            inserted_count = row_count
+            updated_count = 0
+            target_rows_before = None
+            write_delta(
+                enriched,
+                output_path,
+                num_files=int(settings.get("output_files", 1)),
+            )
+            written = spark.read.format("delta").load(str(output_path))
+            if written.count() != row_count:
+                raise RuntimeError(f"Read-back row count failed for {product_name!r}.")
+            if _schema_signature(written) != _schema_signature(enriched):
+                raise RuntimeError(f"Read-back schema failed for {product_name!r}.")
+            _assert_unique_keys(written, keys, product_name)
+            stats = product_table_stats(spark, output_path)
+            data_bytes = stats["data_bytes"]
+            data_files = stats["data_files"]
+            output_version = stats["delta_version"]
+            status = "success"
     except Exception as caught:
         error = caught
         error_message = f"{type(caught).__name__}: {caught}"
@@ -267,11 +417,15 @@ def refresh_product(
             "finished_at": _utc_now(),
             "execution_seconds": perf_counter() - started,
             "row_count": row_count,
+            "inserted_count": inserted_count,
+            "updated_count": updated_count,
+            "target_rows_before": target_rows_before,
             "data_bytes": data_bytes,
             "data_files": data_files,
-            "schema_version": str(settings["schema_version"]),
+            "schema_version": schema_version,
             "status": status,
             "error_message": error_message,
+            "refresh_mode": effective_mode,
         }
         source_versions = {"integrated_taxi_trips": source_version}
         source_versions.update({
@@ -282,11 +436,14 @@ def refresh_product(
             run_id=current_run_id,
             stage="product_refresh",
             target=product_name,
+            mode=effective_mode,
             started_at=started_at,
             execution_seconds=record["execution_seconds"],
             status=status,
             error=error,
-            inserted_count=row_count,
+            inserted_count=inserted_count,
+            updated_count=updated_count,
+            target_rows_before=target_rows_before,
             target_rows_after=row_count,
             schema_version=record["schema_version"],
             source_versions=source_versions,
@@ -310,8 +467,18 @@ def refresh_data_products(
     selected: Sequence[str] | None = None,
     run_id: str | None = None,
     monitoring: bool = True,
+    mode: str = "full",
 ) -> list[dict[str, Any]]:
-    """Refresh configured products from one registered integrated snapshot."""
+    """Refresh configured products from one registered integrated snapshot.
+
+    ``mode='full'`` rebuilds every selected product. ``mode='auto'`` refreshes only
+    products listed in ``metadata/last_update_affects.json`` (written by
+    ``apply_updates``). Hour-grained products in :data:`INCREMENTAL_HOUR_PRODUCTS`
+    use a dirty-key MERGE; other affected products are fully rebuilt. Unaffected
+    products get a skipped monitoring row.
+    """
+    if mode not in ("full", "auto"):
+        raise ValueError("mode must be 'full' or 'auto'")
     config = load_product_config(config_path)
     configured = config["products"]
     names = list(configured) if not selected or selected == ["all"] else list(selected)
@@ -325,8 +492,47 @@ def refresh_data_products(
     snapshot = register_analytics_inputs(spark, delta_root)
     run_id = run_id or str(uuid4())
     products_root = Path(output_root) if output_root is not None else Path(delta_root) / "analytics"
-    return [
-        refresh_product(
+    affected: set[str] | None = None
+    if mode == "auto":
+        affects_path = Path(delta_root) / "metadata" / "last_update_affects.json"
+        if affects_path.exists():
+            payload = json.loads(affects_path.read_text(encoding="utf-8"))
+            affected = set(payload.get("products") or [])
+        else:
+            affected = set()
+    records: list[dict[str, Any]] = []
+    for name in names:
+        if mode == "full":
+            refresh_mode = "full"
+        elif name not in (affected or set()):
+            refresh_mode = "skip"
+        elif name in INCREMENTAL_HOUR_PRODUCTS:
+            refresh_mode = "incremental"
+        else:
+            refresh_mode = "full"
+        if refresh_mode == "skip":
+            started_at = _utc_now()
+            row = run_row(
+                run_id=run_id,
+                stage="product_refresh",
+                target=name,
+                mode="skip",
+                started_at=started_at,
+                execution_seconds=0.0,
+                status="skipped",
+                schema_version=str(configured[name]["schema_version"]),
+            )
+            record_run(spark, row, delta_root, enabled=monitoring)
+            records.append({
+                "run_id": run_id,
+                "product_name": name,
+                "status": "skipped",
+                "refresh_mode": "skip",
+                "row_count": None,
+                "schema_version": str(configured[name]["schema_version"]),
+            })
+            continue
+        record = refresh_product(
             spark,
             name,
             resolved_builders[name],
@@ -336,9 +542,10 @@ def refresh_data_products(
             output_root=products_root,
             run_id=run_id,
             monitoring=monitoring,
+            refresh_mode=refresh_mode,
         )
-        for name in names
-    ]
+        records.append(record)
+    return records
 
 
 def _trips(spark: SparkSession) -> DataFrame:
@@ -350,16 +557,19 @@ def _nyc_trips(spark: SparkSession) -> DataFrame:
     return _trips(spark).where(F.col("environment_in_scope"))
 
 
-def build_daily_mobility_summary(spark: SparkSession) -> DataFrame:
+def build_daily_mobility_summary(
+    spark: SparkSession,
+    trips: DataFrame | None = None,
+) -> DataFrame:
     """Local date/hour metrics keyed by the actual UTC hour."""
-    trips = (
-        _trips(spark)
-        .withColumn("local_pickup_ts", _local_timestamp("pickup_hour_utc"))
+    base = trips if trips is not None else _trips(spark)
+    framed = (
+        base.withColumn("local_pickup_ts", _local_timestamp("pickup_hour_utc"))
         .withColumn("local_pickup_date", F.to_date("local_pickup_ts"))
         .withColumn("local_pickup_hour", F.hour("local_pickup_ts"))
         .withColumn("local_weekday", F.date_format("local_pickup_ts", "EEEE"))
     )
-    return trips.groupBy("pickup_hour_utc").agg(
+    return framed.groupBy("pickup_hour_utc").agg(
         F.first("local_pickup_date").alias("local_pickup_date"),
         F.first("local_pickup_hour").alias("local_pickup_hour"),
         F.first("local_weekday").alias("local_weekday"),
@@ -406,15 +616,18 @@ def build_weather_impact_summary(spark: SparkSession) -> DataFrame:
     )
 
 
-def build_air_quality_impact_summary(spark: SparkSession) -> DataFrame:
+def build_air_quality_impact_summary(
+    spark: SparkSession,
+    trips: DataFrame | None = None,
+) -> DataFrame:
     """NYC demand per UTC hour with the matched hourly PM2.5, the same population as Q3."""
-    trips = (
-        _nyc_trips(spark)
-        .withColumn("local_pickup_ts", _local_timestamp("pickup_hour_utc"))
+    base = trips if trips is not None else _nyc_trips(spark)
+    framed = (
+        base.withColumn("local_pickup_ts", _local_timestamp("pickup_hour_utc"))
         .withColumn("local_pickup_date", F.to_date("local_pickup_ts"))
     )
     return (
-        trips.groupBy("pickup_hour_utc")
+        framed.groupBy("pickup_hour_utc")
         .agg(
             F.first("local_pickup_date").alias("local_pickup_date"),
             F.first("air_quality_pm25", ignorenulls=True).alias("air_quality_pm25"),

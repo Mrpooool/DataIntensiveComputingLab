@@ -47,6 +47,12 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--no-monitoring", action="store_true",
                         help="Do not write metadata/pipeline_runs (for overhead measurements).")
+    parser.add_argument(
+        "--mode",
+        choices=("full", "auto"),
+        default="full",
+        help="full rebuilds every selected product; auto refreshes only those affected by apply_updates",
+    )
     parser.add_argument("--master", default="local[4]")
     parser.add_argument("--driver-memory", default="4g")
     parser.add_argument("--shuffle-partitions", type=int, default=128)
@@ -74,6 +80,7 @@ def main() -> None:
             selected=selected,
             run_id=args.run_id,
             monitoring=not args.no_monitoring,
+            mode=args.mode,
         )
         print(json.dumps({"status": "success", "products": records}, default=str, indent=2))
     except Exception as error:

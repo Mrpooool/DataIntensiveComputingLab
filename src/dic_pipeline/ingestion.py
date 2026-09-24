@@ -306,6 +306,7 @@ def ingest_batch(
         versions[dataset] = DeltaTable.forPath(spark, str(path)).history(1).first()["version"]
 
     manifest = Path(delta_root) / "metadata" / "completed_batch.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     pending = manifest.with_suffix(".tmp")
     pending.write_text(
         json.dumps({"run_id": current_run_id, "versions": versions}, indent=2) + "\n",

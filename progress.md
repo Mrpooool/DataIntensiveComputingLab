@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-24：W1、W2 已完成；W3 进行中，C 的监控与评测骨架已完成，A/B 尚未开始。详见 [task_plan.md](task_plan.md)。
+截至 2026-09-24：W1、W2 已完成；W3 中 **角色 A（Task 1–2）实现与本机全量冒烟已完成**（分支 `feat/w3-role-a`）；C 的监控与评测骨架已完成；B 尚未开始。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -42,18 +42,40 @@
 
 2026-09-23：已在 `task_plan.md` 确定 W3 分工——A：增量更新与分析一致性；B：校验扩展（不变）；C：监控、评测与材料汇总。
 
+### 角色 A 验收对照（Assignment Task 1–2）— **完成**
+
+| Assignment 要求 | 状态 | 证据 |
+| --- | --- | --- |
+| Task 1：为 Taxi / Weather / Air 生成仅含新/改记录的更新文件 | 完成 | `generate_update`；全量：`data/updates/`（Taxi ~7% 新 + ~1.5% 重复；Weather/Air 各 168 小时 + `humidity`/`aqi`） |
+| Task 1：增量管道插入新行、忽略重复、保留未变行、支持约定 Schema 演进、不整库重建 | 完成 | `apply_updates` MERGE；Taxi insert-only；Weather/Air insert+update + 加列；标准化 taxi **10,223,396**、weather **8,952**、air **52,053** |
+| Task 1：更新后整合表可用 | 完成 | 新 Taxi append 至 integrated（**10,223,396**，version 1）；`sync-integrated` 用于补 partial apply 缺口 |
+| Task 2：只刷新受影响产品；支持演进；查询尽量兼容；减少无谓重算 | 完成 | `refresh_data_products(mode=auto\|full)`；小时产品脏键 MERGE；zone/weather 产品选择性整表重建；演进列不进 integrated |
+| Task 2 Discuss | 完成 | 写入 [docs/w3_role_a_incremental.md](docs/w3_role_a_incremental.md) |
+
+CLI：`scripts.run_incremental generate \| apply \| sync-integrated`；产品：`scripts.run_data_products --mode auto\|full`。
+
+### 2026-09-24 A：增量与产品刷新（分支 `feat/w3-role-a`）
+
+- **代码**：`generate_update` / `apply_updates` / `sync_integrated_from_standardized`；`refresh_data_products(mode=)`（auto：`daily_mobility`/`air_quality_impact` 增量 MERGE；`taxi_zone`/`weather_impact` 整表重建）；`check_schema` 白名单；provenance `lineage`；`coverage_window.json`；监控 `stage=incremental_update`。
+- **说明**：[docs/w3_role_a_incremental.md](docs/w3_role_a_incremental.md)。
+- **单测**：`tests.test_incremental` 等；小时产品增量 vs full 对齐测试已加。
+- **本机全量冒烟（2026-09-24）**：
+  - generate（seed 0）+ apply：Weather/Air 成功；Taxi 首次 partial 后经 `sync-integrated` 补 **668,820** 行进 integrated。
+  - `run_data_products --mode auto`：四产品 success；daily/air **2183→2207**（+24）；zone **773→943**；weather **1220**（与再跑 `mode=full` / live builder 一致；相对旧 export 3017 行是因为类别从 coco 码改为标签，非刷新错误）。
+- **A 侧收尾（非功能缺口）**：分支待合入 `main` / 开 PR；设计报告增量章节由 C 汇总时并入；评测三项（`incremental_update` / `analytical_refresh` / `storage_overhead`）等合入后由 C 在同一版本跑。
+
 ### 2026-09-24 C：监控与评测骨架（分支 `c/w3-monitoring`，提交 `bfe33a2`，未推送）
 
 - 监控表 `metadata/pipeline_runs`（`monitoring.py`）取代 `ingestion_runs` 与 `product_refresh_runs`：一行对应一次执行中的一个阶段 × 目标，摄入、整合、产品刷新三处都已接入。`duplicate_count` 改为“目标表中已存在而跳过”，批内重复算作拒绝行，按码计数保留在 `validation_failure_counts_json`。
 - 失败语义：阶段失败时永远抛阶段自己的异常，监控写入失败只附加 note；阶段成功但监控行丢失时抛 `MonitoringWriteError`。所有 CLI 新增 `--no-monitoring`，整合与产品刷新新增 `--run-id`。
 - 五条运维 SQL 在 `sql/monitoring/`，入口 `scripts.run_monitoring_report`；`--import-legacy` 已把本机 W1/W2 的 4 行摄入、4 行产品刷新记录导入。现有数据上：Taxi 拒绝 202 行（`dropoff_before_pickup` 180、`timestamp_outside_source_period` 21、`duplicate_record` 1），最慢为 Taxi 摄入 156.8 秒。
-- 评测骨架 `w3_evaluation.py` + `scripts.run_w3_evaluation`：每次运行（含预热）都在独立目录中使用基线的新副本，变体交替执行，输出计数不一致时不报时间。已可运行三项监控开销；增量、刷新、存储、校验四项标为 pending，并写明缺少的 A/B 入口。
+- 评测骨架 `w3_evaluation.py` + `scripts.run_w3_evaluation`：每次运行（含预热）都在独立目录中使用基线的新副本，变体交替执行，输出计数不一致时不报时间。已可运行三项监控开销；增量、刷新、存储、校验四项标为 pending，并写明缺少的 A/B 入口（**A 入口现已具备，合入后可解 pending**）。
 - 子 agent 审查了方案，采纳的修改包括：计数守恒式、补充 `mode` / `validation_enabled` / `target_rows_before/after` / `input_paths_json` 等列、改用普通函数而非上下文管理器、放弃 Delta RESTORE 改为整目录复制（RESTORE 不删文件，存储数字会被污染）。
 - 接口约定见 [docs/w3_interfaces.md](docs/w3_interfaces.md)，标 **agree** 的条目待 A/B 确认：`incremental.generate_update` / `apply_updates`、`refresh_data_products(mode=)`、校验开关、`check_schema`，以及有效时间窗口、溯源 lineage、跨批次去重、演进 CSV 读取顺序、manifest 重写这五项跨角色决定。
 - 验证：完整回归 **70 项 OK，1009.6 秒**（新增 15 项）；`git diff --check` 通过。尚未在全量数据上运行评测。
 
 下一步：
 
-1. 把 [docs/w3_interfaces.md](docs/w3_interfaces.md) 发给 A、B 确认，时间窗口一条最先定，否则 A 生成的 Taxi 更新会被整批拒绝。
-2. A 的 manifest 定型后放宽 `verify_integrated_provenance`。
-3. A/B 交付后，在同一代码版本上一次跑完全部七项评测。监控开销现在就能测，但 B 的校验扩展和 A 的增量路径都会改动摄入代码，提前测的数字到时还得重跑。
+1. A：将 `feat/w3-role-a` 开 PR / 合入 `main`（功能已齐）。
+2. B：校验扩展与 `prepare(validate=…)`；确认 Schema / 产品刷新边界（A 已实现初版 Discuss）。
+3. C：A 合入后解除评测 pending，与 B 对齐后一次跑完七项评测；汇总设计/evaluation 报告与提交包。
