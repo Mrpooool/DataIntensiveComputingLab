@@ -58,12 +58,6 @@ PRODUCTS_BY_DATASET = {
     "air_quality": ("air_quality_impact_summary",),
 }
 
-ALLOWED_EVOLUTION = {
-    "weather": (("humidity", "double", True),),
-    "air_quality": (("aqi", "double", True),),
-}
-
-
 def _parse_utc(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -121,15 +115,26 @@ def read_update_source(
     config = load_dataset_config(dataset)
     fmt = str(config["source_format"])
     if fmt == "parquet":
-        return spark.read.format("parquet").load(str(path))
+        frame = spark.read.format("parquet").load(str(path))
+        _accepted, unsupported = check_schema(
+            frame.schema,
+            RAW_SCHEMAS[dataset],
+            policy=config.get("schema_evolution"),
+        )
+        if unsupported:
+            raise SchemaValidationError(
+                f"{dataset} update has unsupported schema changes: {unsupported}"
+            )
+        return frame
 
     expected = list(REQUIRED_RAW_COLUMNS[dataset])
-    header = path.read_text(encoding="utf-8").splitlines()[0].split(",")
+    with path.open(encoding="utf-8", newline="") as handle:
+        header = next(csv.reader(handle))
     header = [name.strip() for name in header]
     accepted, unsupported = check_schema(
         header,
         expected,
-        policy={"allow_add": [item[0] for item in ALLOWED_EVOLUTION.get(dataset, ())]},
+        policy=config.get("schema_evolution"),
     )
     if unsupported:
         raise SchemaValidationError(
@@ -154,7 +159,17 @@ def read_update_source(
         if key == "header":
             continue
         reader = reader.option(str(key), str(value))
-    return reader.load(str(path))
+    frame = reader.load(str(path))
+    _accepted, unsupported = check_schema(
+        frame.schema,
+        RAW_SCHEMAS[dataset],
+        policy=config.get("schema_evolution"),
+    )
+    if unsupported:
+        raise SchemaValidationError(
+            f"{dataset} update has unsupported schema changes: {unsupported}"
+        )
+    return frame
 
 
 def generate_update(
@@ -492,9 +507,9 @@ def _merge_accepted(
     spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
     before = spark.read.format("delta").load(str(target_path)).count()
     source_count = accepted.count()
-    if dataset == "weather":
+    if dataset == "weather" and "humidity" in accepted.columns:
         _ensure_delta_columns(spark, target_path, [("humidity", "double")])
-    if dataset == "air_quality":
+    if dataset == "air_quality" and "aqi" in accepted.columns:
         _ensure_delta_columns(spark, target_path, [("aqi", "double")])
 
     target = DeltaTable.forPath(spark, str(target_path))
@@ -573,7 +588,6 @@ def apply_updates(
     monitoring: bool = True,
 ) -> list[dict[str, Any]]:
     """Apply update manifests to standardized / rejected / integrated tables and republish."""
-    del validate  # Role B will thread prepare(validate=...); rules always run for now.
     root = Path(delta_root)
     current_run_id = run_id or str(uuid4())
     batch = load_completed_batch(root)
@@ -608,12 +622,24 @@ def apply_updates(
         target_path = root / "standardized" / dataset
         target_before = spark.read.format("delta").load(str(target_path)).count()
         output_stats: dict[str, int] = {}
-        schema_changes = list(update.get("schema_changes") or [])
+        schema_changes: list[dict[str, Any]] = []
         try:
-            raw = read_update_source(
-                spark, dataset, update["path"], schema_changes=schema_changes
-            )
             config = load_dataset_config(dataset)
+            raw = read_update_source(
+                spark,
+                dataset,
+                update["path"],
+                schema_changes=update.get("schema_changes"),
+            )
+            schema_changes, unsupported = check_schema(
+                raw.schema,
+                RAW_SCHEMAS[dataset],
+                policy=config.get("schema_evolution"),
+            )
+            if unsupported:
+                raise SchemaValidationError(
+                    f"{dataset} update has unsupported schema changes: {unsupported}"
+                )
             if dataset == "taxi":
                 end = update.get("valid_pickup_end_utc_exclusive") or coverage_end
                 coverage_end = max(coverage_end, str(end))
@@ -625,7 +651,25 @@ def apply_updates(
             if schema_changes:
                 config = dict(config)
                 config["schema_version"] = "1.1.0"
-            result = prepare(raw, config, run_id=current_run_id)
+            reference_data: dict[str, Any] = {}
+            if validate and dataset == "taxi":
+                zone_rows = (
+                    spark.read.format("delta")
+                    .load(str(root / "standardized" / "taxi_zones"))
+                    .select("location_id")
+                    .where("location_id IS NOT NULL")
+                    .collect()
+                )
+                reference_data["taxi_zone_ids"] = tuple(
+                    sorted({int(row["location_id"]) for row in zone_rows})
+                )
+            result = prepare(
+                raw,
+                config,
+                run_id=current_run_id,
+                validate=validate,
+                reference_data=reference_data,
+            )
             metrics = dict(result.metrics)
             counts.update({
                 "processed_count": metrics["input_count"],
@@ -692,7 +736,7 @@ def apply_updates(
                 status="failed",
                 error=error,
                 target_rows_before=target_before,
-                validation_enabled=True,
+                validation_enabled=validate,
                 schema_changes=schema_changes,
                 input_paths=[str(update.get("path"))],
                 **counts,
@@ -715,7 +759,7 @@ def apply_updates(
             scope_excluded_count=counts["scope_excluded_count"],
             target_rows_before=target_before,
             target_rows_after=record["target_rows_after"],
-            validation_enabled=True,
+            validation_enabled=validate,
             validation_failure_counts=metrics.get("error_counts"),
             quality_flag_counts=metrics.get("quality_flag_counts"),
             schema_version=record["schema_version"],

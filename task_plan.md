@@ -1,6 +1,6 @@
 # 项目执行方案
 
-依据：[课程要求](Assignment.md)。W1、W2 已完成；W3：A（增量 + 分析一致性）与 C①②（监控/评测骨架）已完成；B 尚未开始。
+依据：[课程要求](Assignment.md)。W1、W2 已完成；W3：A（增量 + 分析一致性）、B（校验扩展 + Schema 策略）与 C①②（监控/评测骨架）已完成，待 C 统一跑评测和汇总交付。
 
 ## W1 完成总结
 
@@ -117,15 +117,15 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | ③ 全量评估 | 提供增量与刷新耗时可复现入口 | 复核 Schema/校验讨论题 | 跑评测五类耗时与存储开销 | 有前后对照数字，结论有证据 |
 | ④ 交付 | 增量与一致性实现说明交 C 汇总 | 完成校验与一致性设计说明 | 整合 README、evaluation report、提交包 | 按 README 在独立输出目录可复现 |
 
-当前进度（2026-09-24）：`c/pipeline-fixes` 已由 PR #7 合入 `main`。C 的监控与评测骨架已在 `main`（PR #8）。**A 的 Assignment Task 1–2 已在 `feat/w3-role-a` 完成**（含本机全量 generate/apply/sync-integrated/`mode=auto` 冒烟；说明见 [docs/w3_role_a_incremental.md](docs/w3_role_a_incremental.md)）。B 尚未开始。
+当前进度（2026-09-25）：`c/pipeline-fixes` 已由 PR #7 合入 `main`，C 的监控与评测骨架已在 `main`（PR #8），A 的 Task 1–2 已由 PR #9 合入 `main`。B 已在 `feat/w3-role-b-validation` 完成 Task 4 与 Task 2 的规则部分，说明见 [docs/w3_role_b_validation.md](docs/w3_role_b_validation.md)。
 
 - [x] 三份增量更新文件可生成，并记录新行/重复行/Schema 变更（A，`feat/w3-role-a`）。
 - [x] 增量管道：插入新行、忽略重复、保留未变行、支持约定内 Schema 演进，且不整库重建（A）。
 - [x] 受影响分析产品可刷新；查询在演进后仍兼容或有明确迁移；无效记录不进入产品（A：`mode=auto|full`；小时产品脏键 MERGE；拒绝路径复用 `prepare`）。
 - [x] 监控表记录约定字段，并有 SQL/入口回答课程四个运维问题（C；增量阶段行已由 A 接入）。
-- [ ] 校验框架可扩展，通用与专用规则边界清晰。
-- [ ] 评测覆盖增量、刷新、存储、校验、监控五类开销，结论有实测支撑（等 A 合入 + B 开关）。
-- [ ] 受影响测试通过；改共享模块时跑完整测试；交付前 `git diff --check`。
+- [x] 校验框架可扩展，通用与专用规则边界清晰（B：注册式 rule builder、Taxi 引用校验、演进字段完整性/范围校验、Schema 白名单）。
+- [ ] 评测覆盖增量、刷新、存储、校验、监控五类开销，结论有实测支撑（A/B 入口已具备，待 C 接线和全量实测）。
+- [x] B 受影响测试通过；交付前仍需全组完整回归和 `git diff --check`。
 - [ ] 提交完整代码/配置/测试、3–5 页英文设计报告、简短英文 evaluation report、简洁英文 README；同步中文 README。
 
 ## W3 C 阶段状态
@@ -134,12 +134,20 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | --- | --- | --- |
 | C① 监控最小链路 | `pipeline_runs` 表、写入接口、三处阶段接入、`--no-monitoring` | complete（`bfe33a2`） |
 | C② 运维查询与评测骨架 | 五条 SQL、`--import-legacy`、`w3_evaluation.py` 与 CLI、pending 机制 | complete（`bfe33a2`） |
-| C③ 接口对齐 | 把 [docs/w3_interfaces.md](docs/w3_interfaces.md) 发给 A、B，确认标 **agree** 的条目；时间窗口一条最先定 | in_progress |
+| C③ 接口对齐 | A/B 已确认并实现 [docs/w3_interfaces.md](docs/w3_interfaces.md) 的增量、校验和监控接口 | complete |
 | C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | complete（A 在 `feat/w3-role-a` 已改；合入后 C 可删此项） |
-| C⑤ 全量评测 | A/B 交付后在同一代码版本上一次跑完全部七项，监控开销也不提前单跑（摄入代码还会变） | pending |
+| C⑤ 全量评测 | A/B 入口齐备后在同一代码版本上一次跑完全部七项 | pending |
 | C⑥ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
 
-分支 `c/w3-monitoring` 只在本地，按约定整周做完再统一提 PR。
+## W3 B 阶段状态
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| B① Schema 策略 | 只允许 Weather `humidity: double?`、Air `aqi: double?`；检测增删列、类型、重复名、必填 nullability | complete |
+| B② 行级校验 | Taxi Zone 引用完整性、演进列完整性/范围、拒绝隔离与监控错误码 | complete |
+| B③ 扩展接口 | `register_rule_builder` / `unregister_rule_builder`，支持数据集专用和 `*` 通用规则 | complete |
+| B④ A/C 接线 | 全量/增量 `validate` 开关、真实 Schema 检查、配置版本、评测入口 | complete |
+| B⑤ 文档与测试 | [校验与一致性说明](docs/w3_role_b_validation.md)；新增及受影响测试通过 | complete |
 
 ## W3 C 遇到的错误
 

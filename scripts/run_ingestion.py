@@ -22,6 +22,11 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--no-monitoring", action="store_true",
                         help="Do not write metadata/pipeline_runs (for overhead measurements).")
+    parser.add_argument(
+        "--no-validation",
+        action="store_true",
+        help="Disable row business rules for controlled validation-overhead experiments only.",
+    )
     parser.add_argument("--master", default="local[4]")
     parser.add_argument("--driver-memory", default="4g")
     parser.add_argument("--shuffle-partitions", type=int, default=128)
@@ -37,6 +42,7 @@ def main() -> None:
     try:
         options = dict(
             data_dir=args.data_dir, delta_root=args.output_root, run_id=run_id,
+            validate=not args.no_validation,
             monitoring=not args.no_monitoring,
         )
         if args.dataset == "all":

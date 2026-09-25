@@ -125,16 +125,35 @@ class IngestionTests(unittest.TestCase):
             fixtures = {
                 "weather.csv": ("weather", weather_row()),
                 "hourly_88101_2024.csv": ("air_quality", air_row()),
-                "taxi_zone_lookup.csv": ("taxi_zones", {
-                    "LocationID": 161, "Borough": "Manhattan",
-                    "Zone": "Midtown Center", "service_zone": "Yellow",
-                }),
             }
             for filename, (dataset, row) in fixtures.items():
                 with (data_dir / filename).open("w", encoding="utf-8", newline="") as stream:
                     writer = csv.DictWriter(stream, fieldnames=RAW_SCHEMAS[dataset].fieldNames())
                     writer.writeheader()
                     writer.writerow(row)
+            with (data_dir / "taxi_zone_lookup.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as stream:
+                writer = csv.DictWriter(
+                    stream, fieldnames=RAW_SCHEMAS["taxi_zones"].fieldNames()
+                )
+                writer.writeheader()
+                writer.writerows(
+                    [
+                        {
+                            "LocationID": 161,
+                            "Borough": "Manhattan",
+                            "Zone": "Midtown Center",
+                            "service_zone": "Yellow",
+                        },
+                        {
+                            "LocationID": 236,
+                            "Borough": "Manhattan",
+                            "Zone": "Upper East Side North",
+                            "service_zone": "Yellow",
+                        },
+                    ]
+                )
             records = ingest_batch(self.spark, data_dir=data_dir, delta_root=delta_root, run_id="complete")
             self.assertEqual(len(records), 4)
             snapshot = read_completed_batch(self.spark, delta_root)

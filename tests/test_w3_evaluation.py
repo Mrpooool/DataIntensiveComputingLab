@@ -92,14 +92,20 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(mismatch["status"], "mismatch")
             self.assertNotIn("median_seconds", mismatch["variants"]["a"])
 
-    def test_pending_measurements_name_the_missing_entry_point(self):
+    def test_delivered_entry_points_are_ready_for_role_c_wiring(self):
         measurements = {m.name: m for m in build_measurements()}
-        self.assertIn("role A", measurements["incremental_update"].pending)
-        self.assertIn("role B", measurements["validation_overhead"].pending)
+        self.assertIsNone(measurements["incremental_update"].pending)
+        self.assertIsNone(measurements["validation_overhead"].pending)
         with tempfile.TemporaryDirectory() as directory:
-            result = self._run(measurements["incremental_update"], Path(directory))
-        self.assertEqual((result["status"], result["runs"]), ("pending", []))
-        self.assertIn("apply_updates", result["requires"])
+            incremental = self._run(
+                measurements["incremental_update"], Path(directory) / "incremental"
+            )
+            validation = self._run(
+                measurements["validation_overhead"], Path(directory) / "validation"
+            )
+        for result in (incremental, validation):
+            self.assertEqual((result["status"], result["runs"]), ("pending", []))
+            self.assertIn("role C", result["requires"])
 
     def test_storage_report_separates_snapshot_and_disk(self):
         report = storage_report(self.spark, self.baseline)
