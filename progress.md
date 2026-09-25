@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-24：W1、W2 已完成；W3 中 **角色 A（Task 1–2）实现与本机全量冒烟已完成**（分支 `feat/w3-role-a`）；C 的监控与评测骨架已完成；B 尚未开始。详见 [task_plan.md](task_plan.md)。
+截至 2026-09-25：W1、W2 已完成；W3 中 A 的增量/刷新已合入 `main`，B 的校验扩展与一致性策略已在 `feat/w3-role-b-validation` 完成，C 的监控与评测骨架已完成；尚待最终评测和提交材料汇总。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -76,6 +76,15 @@ CLI：`scripts.run_incremental generate \| apply \| sync-integrated`；产品：
 
 下一步：
 
-1. A：将 `feat/w3-role-a` 开 PR / 合入 `main`（功能已齐）。
-2. B：校验扩展与 `prepare(validate=…)`；确认 Schema / 产品刷新边界（A 已实现初版 Discuss）。
-3. C：A 合入后解除评测 pending，与 B 对齐后一次跑完七项评测；汇总设计/evaluation 报告与提交包。
+1. B：提交 `feat/w3-role-b-validation` PR 并合入 `main`。
+2. C：接通 validation on/off 变体，一次跑完七项评测。
+3. C：汇总设计/evaluation 报告、README 与提交包。
+
+### 2026-09-25 B：校验扩展、Schema 策略与一致性规则（分支 `feat/w3-role-b-validation`）
+
+- **Schema 演进**：`check_schema` 现校验缺列、未知加列、重复列名、类型变化和必填 nullability；配置只自动接受 Weather `humidity: double?` 与 Air Quality `aqi: double?`，两者 schema/rule version 升到 `1.1.0`。CSV 先查 header、Parquet 查真实 StructType，不信任 manifest 自报变更。
+- **新规则**：Taxi 上下车 Zone 必须存在于本次快照的 lookup；演进列必须完整且 `humidity ∈ [0,100]`、`aqi ∈ [0,500]`。坏行继续写既有 `rejected` 并按稳定错误码上报，不进入整合表/产品。
+- **扩展能力**：`register_rule_builder(dataset, builder)` / `unregister_rule_builder` 支持数据集专用规则和 `*` 通用规则，不需修改校验调度核心。
+- **A/C 接线**：修复 A 已声明但未生效的 `apply_updates(validate=...)`，全量摄入和增量更新共用 `prepare` 开关；`--no-validation` 仅供隔离评测；监控行写入真实 `validation_enabled`。
+- **分析一致性**：`humidity`/`aqi` 留在标准化源表，当前不改变 integrated/Q1–Q6 输出 Schema；刷新边界和必须全量重算的条件记录于 [docs/w3_role_b_validation.md](docs/w3_role_b_validation.md)。
+- **测试证据**：新增 Schema/校验测试 8/8；针对性回归 preparation 11/11、ingestion 7/7、incremental 5/5、W3 evaluation 4/4；最终完整回归 **84/84 通过（470.105 秒）**。静态编译、配置 JSON 校验与 `git diff --check` 均通过。

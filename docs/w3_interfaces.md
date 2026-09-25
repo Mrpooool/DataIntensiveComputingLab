@@ -1,6 +1,6 @@
 # Week 3 interfaces: monitoring, incremental updates, validation
 
-Role C owns monitoring (Task 3) and the evaluation (Task 5). Both depend on what the incremental pipeline (role A) and the validation framework (role B) report, so this page fixes names and meanings before implementation starts. Items marked **agree** still need sign-off from the owner.
+Role C owns monitoring (Task 3) and the evaluation (Task 5). Both depend on what the incremental pipeline (role A) and the validation framework (role B) report, so this page fixes names and meanings across the three implementations.
 
 ## 1. What C provides
 
@@ -64,7 +64,7 @@ record_run(spark, row, delta_root, enabled=monitoring)   # outside the try
 
 `python -m scripts.run_monitoring_report [--query NAME] [--import-legacy] [--output file.json]` runs the SQL in `src/dic_pipeline/sql/monitoring/`: `validation_failures_by_target`, `failure_codes_by_target`, `processing_time_by_target`, `rejected_per_execution`, `processing_time_trend`.
 
-## 2. What C needs from A (incremental pipeline, product refresh) — agree
+## 2. What C needs from A (incremental pipeline, product refresh) — confirmed
 
 In `src/dic_pipeline/incremental.py`:
 
@@ -78,19 +78,24 @@ apply_updates(spark, updates, *, delta_root, run_id, validate=True, monitoring=T
 - `refresh_data_products(..., mode="auto" | "full")`: `auto` refreshes only affected products. Each returned record carries `refresh_mode`; a skipped product still writes a row with `mode="skip"`, `status="skipped"`. The evaluation checks that `auto` output equals a `full` rebuild.
 - Every entry point takes `delta_root` and `run_id`; `scripts.run_integration` and `scripts.run_data_products` now accept `--run-id`.
 
-## 3. What C needs from B (validation) — agree
+## 3. What C needs from B (validation) — confirmed
 
 - A switch: `prepare(..., validate=False)` threaded through `ingest_dataset(validate=...)` and `apply_updates(validate=...)`. With rules off, `error_reasons` still exists (empty) so the split and the within-file duplicate collapse keep working. Only used on evaluation copies; never published.
 - `check_schema(actual_columns, expected_schema, policy) -> (accepted_changes, unsupported_changes)`, with unsupported changes raising the existing `SchemaValidationError`. `accepted_changes` goes into `schema_changes_json` as shown above.
 - Existing error codes keep their names; new rules add new codes. The ops queries group by code.
+- `reference_data={"taxi_zone_ids": ...}` supplies the current Zone snapshot to the Taxi validator. Missing pickup/drop-off references use `missing_reference_record`.
+- Weather `humidity` and Air Quality `aqi` are the only allowed additions. They remain nullable for historical Delta rows, but new rows with a missing/out-of-range value are isolated with `incomplete_record` or `invalid_attribute_value`.
+- `register_rule_builder(dataset, builder)` / `unregister_rule_builder(...)` add specialised rules without changing the validation dispatcher. `dataset="*"` registers a generic rule.
 
-## 4. Cross-role decisions — agree
+The full policy and product-consistency boundaries are in [w3_role_b_validation.md](w3_role_b_validation.md).
 
-1. **Validity window.** Every update lies after `valid_pickup_end_utc_exclusive` in `configs/datasets.json`, so today's rules reject all of it as `timestamp_outside_source_period`. The window must extend per batch: B treats the change as a rule change (bump `rule_version`), A records the effective window in the update manifest and passes it to `prepare()`, and C points `queries.load_calendar_coverage()` at the same source so Q3–Q5 pad zero-demand hours over the new period too.
-2. **Provenance.** `integration.verify_integrated_provenance` accepts exactly one `run_id`. After an append the table holds several. Proposal: the manifests keep `run_id` (latest) and add `lineage` (all run ids), and the check becomes `set(table run_ids) ⊆ set(lineage)` with `lineage[-1] == run_id`. C changes the check once A has the manifest shape.
+## 4. Cross-role decisions — confirmed
+
+1. **Validity window.** A records the effective new window in the update manifest and extends the configuration used by `prepare`; B treats the new bound as a rule-version change; the coverage manifest extends Q3–Q5's zero-demand calendar over the same period.
+2. **Provenance.** Published manifests keep the latest `run_id` and complete `lineage`; verification accepts table run ids as a subset of lineage and requires the latest run at the end.
 3. **Cross-batch duplicates.** `mark_duplicate_rows` compares rows inside one input. The 1–2% copied Taxi trips only show up against the existing table (anti-join or MERGE on `record_id`); they count as `duplicate_count`, not `rejected_count`.
-4. **Reading an evolved CSV.** `read_source` applies the fixed raw schema. With an extra `humidity` column, `count()` still succeeds because Spark prunes columns, but `collect()` fails on the header. The update reader should read the header first, call `check_schema`, then read with the original schema plus the accepted columns.
-5. **Manifests stay pinned.** `apply_updates` must rewrite `completed_batch.json` atomically with all four current versions, not delete it the way `ingest_dataset` does on entry.
+4. **Reading an evolved source.** The update reader inspects the CSV header or Parquet schema first, calls `check_schema`, and parses only the original schema plus accepted columns. It does not trust the manifest's claim.
+5. **Manifests stay pinned.** `apply_updates` rewrites `completed_batch.json` atomically with all four current versions instead of deleting it like a standalone full ingestion.
 
 ## 5. How the evaluation uses this
 
@@ -102,4 +107,4 @@ apply_updates(spark, updates, *, delta_root, run_id, validate=True, monitoring=T
 | `incremental_update` | A: `generate_update`, `apply_updates` |
 | `analytical_refresh` (auto vs full) | A: `apply_updates`, `refresh_data_products(mode=)` |
 | `storage_overhead` (snapshot vs on-disk bytes, commits) | A: `apply_updates` |
-| `validation_overhead` | B: `validate` switch |
+| `validation_overhead` | B entry point is ready; C wires and runs the on/off variants |

@@ -5,7 +5,7 @@
     "source_format": "parquet",
     "output_files": 8,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.1",
+    "rule_version": "1.1.0",
     "source_timezone": "America/New_York",
     "valid_pickup_start_utc": "2024-01-01 05:00:00",
     "valid_pickup_end_utc_exclusive": "2024-04-01 04:00:00",
@@ -18,8 +18,13 @@
     "reader_options": {"header": "true"},
     "output_files": 1,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.1",
+    "rule_version": "1.1.0",
     "source_timezone": "UTC",
+    "schema_evolution": {
+      "allow_add": {
+        "humidity": {"type": "double", "nullable": true}
+      }
+    },
     "duplicate_key": ["weather_hour_utc"]
   },
   "air_quality": {
@@ -29,7 +34,12 @@
     "reader_options": {"header": "true"},
     "output_files": 1,
     "schema_version": "1.0.0",
-    "rule_version": "1.0.1",
+    "rule_version": "1.1.0",
+    "schema_evolution": {
+      "allow_add": {
+        "aqi": {"type": "double", "nullable": true}
+      }
+    },
     "scope_state": "New York",
     "scope_counties": ["Bronx", "Kings", "New York", "Queens", "Richmond"],
     "duplicate_key": [

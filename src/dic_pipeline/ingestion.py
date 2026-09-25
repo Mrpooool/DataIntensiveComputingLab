@@ -100,6 +100,22 @@ def read_source(
     return reader.load(str(Path(data_dir) / source_pattern))
 
 
+def _validation_reference_data(
+    spark: SparkSession,
+    dataset: str,
+    data_dir: str | Path,
+) -> dict[str, tuple[int, ...]]:
+    """Load the small reference sets needed by row-level validation."""
+    if dataset != "taxi":
+        return {}
+    zones = read_source(spark, "taxi_zones", data_dir)
+    values = {
+        int(row["LocationID"])
+        for row in zones.select("LocationID").where("LocationID IS NOT NULL").collect()
+    }
+    return {"taxi_zone_ids": tuple(sorted(values))}
+
+
 def write_delta(
     dataframe: DataFrame,
     path: str | Path,
@@ -186,7 +202,7 @@ def _monitoring_row(
         rejected_count=record["rejected_count"],
         scope_excluded_count=record["scope_excluded_count"],
         target_rows_after=record["accepted_count"] if succeeded else None,
-        validation_enabled=True,
+        validation_enabled=bool(metrics.get("validation_enabled", True)),
         validation_failure_counts=metrics.get("error_counts"),
         quality_flag_counts=metrics.get("quality_flag_counts"),
         schema_version=record["schema_version"],
@@ -204,6 +220,7 @@ def ingest_dataset(
     data_dir: str | Path = DEFAULT_DATA_DIR,
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
     run_id: str | None = None,
+    validate: bool = True,
     monitoring: bool = True,
 ) -> dict[str, Any]:
     """Read, prepare, write, verify and record one dataset.
@@ -217,7 +234,7 @@ def ingest_dataset(
     started_at = _utc_now()
     started = perf_counter()
     result: PreparationResult | None = None
-    metrics: dict[str, Any] = {}
+    metrics: dict[str, Any] = {"validation_enabled": bool(validate)}
     input_paths: list[str] | None = None
     output: dict[str, int] = {}
 
@@ -226,7 +243,16 @@ def ingest_dataset(
         if monitoring:
             input_paths = sorted(raw.inputFiles())
         config = load_dataset_config(dataset)
-        result = prepare(raw, config, run_id=current_run_id)
+        reference_data = (
+            _validation_reference_data(spark, dataset, data_dir) if validate else {}
+        )
+        result = prepare(
+            raw,
+            config,
+            run_id=current_run_id,
+            validate=validate,
+            reference_data=reference_data,
+        )
         metrics = dict(result.metrics)
         standardized_path = Path(delta_root) / "standardized" / dataset
         rejected_path = Path(delta_root) / "rejected" / dataset
@@ -290,6 +316,7 @@ def ingest_batch(
     data_dir: str | Path = DEFAULT_DATA_DIR,
     delta_root: str | Path = DEFAULT_DELTA_ROOT,
     run_id: str | None = None,
+    validate: bool = True,
     monitoring: bool = True,
 ) -> list[dict[str, Any]]:
     """Publish a handoff only after all four datasets succeed (one writer at a time)."""
@@ -299,7 +326,7 @@ def ingest_batch(
     for dataset in DATASETS:
         record = ingest_dataset(
             spark, dataset, data_dir=data_dir, delta_root=delta_root,
-            run_id=current_run_id, monitoring=monitoring,
+            run_id=current_run_id, validate=validate, monitoring=monitoring,
         )
         records.append(record)
         path = Path(delta_root) / "standardized" / dataset

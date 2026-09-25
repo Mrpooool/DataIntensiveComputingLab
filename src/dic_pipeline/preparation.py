@@ -10,7 +10,11 @@ from pyspark.sql import DataFrame, functions as F
 
 from .schemas import REQUIRED_RAW_COLUMNS
 from .transforms import transform_dataset
-from .validation import mark_duplicate_rows, validate_dataset
+from .validation import (
+    initialize_validation_columns,
+    mark_duplicate_rows,
+    validate_dataset,
+)
 
 
 class SchemaValidationError(ValueError):
@@ -85,6 +89,8 @@ def prepare(
     dataset_config: Mapping[str, Any],
     *,
     run_id: str | None = None,
+    validate: bool = True,
+    reference_data: Mapping[str, Any] | None = None,
 ) -> PreparationResult:
     """Standardize, validate and de-duplicate one raw Spark DataFrame.
 
@@ -99,7 +105,17 @@ def prepare(
     scoped, raw_input_count = _apply_scope(df, dataset, dataset_config)
     audited = _attach_audit_columns(scoped, current_run_id, dataset_config)
     transformed = transform_dataset(audited, dataset, dataset_config) #统一列名和时间，生成行程时长、关联用的小时字段等
-    classified = validate_dataset(transformed, dataset, dataset_config) #检查时间倒序、非法数值、缺失关键字段等，记录错误原因
+    if validate:
+        classified = validate_dataset(
+            transformed,
+            dataset,
+            dataset_config,
+            reference_data=reference_data,
+        )
+    else:
+        # The evaluation switch disables business rules only. Duplicate collapse stays
+        # active so the output still has one deterministic row per business key.
+        classified = initialize_validation_columns(transformed)
     classified = mark_duplicate_rows(classified, dataset_config["duplicate_key"]) #按各数据集的业务键识别重复记录
     # Full Taxi rows include raw JSON; keep the shared cache off the JVM heap.
     classified.persist(StorageLevel.DISK_ONLY)
@@ -123,6 +139,7 @@ def prepare(
         "dataset": dataset,
         "schema_version": str(dataset_config["schema_version"]),
         "rule_version": str(dataset_config["rule_version"]),
+        "validation_enabled": bool(validate),
         "raw_input_count": raw_input_count,
         "scope_excluded_count": excluded_count,
         "input_count": in_scope_input_count,

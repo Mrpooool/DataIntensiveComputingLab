@@ -1,6 +1,6 @@
 # Urban data integration platform
 
-A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them.
+A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation.
 
 ## Setup
 
@@ -63,6 +63,25 @@ Week 2 reads the snapshot that integration published; no new repository or copie
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark --experiment q1_partition_pruning --repeats 5
 ```
 
+Week 3 update files and validation reuse the published Week 1/2 Delta root:
+
+```powershell
+# Generate deterministic Taxi, Weather and Air Quality updates.
+.\.venv\Scripts\python.exe -m scripts.run_incremental generate --dataset all
+
+# Validate and merge the updates, then refresh affected products.
+.\.venv\Scripts\python.exe -m scripts.run_incremental apply
+.\.venv\Scripts\python.exe -m scripts.run_data_products --mode auto
+
+# Inspect validation failures and other operational metrics.
+.\.venv\Scripts\python.exe -m scripts.run_monitoring_report --query validation_failures_by_target
+
+# List or run the isolated production-readiness measurements.
+.\.venv\Scripts\python.exe -m scripts.run_w3_evaluation --list
+```
+
+Validation is enabled by default. `--no-validation` on ingestion/incremental commands and `--no-monitoring` are evaluation-only controls and must not be used for published runs.
+
 Integration and benchmarking require a successful four-table batch; a single-table rerun invalidates the completion marker, so rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs, and each successful integration republishes `data/delta/metadata/completed_integration.json`, which pins the Delta versions every Week 2 query and product reads. Use one ingestion process per output directory; each benchmark creates a new run directory.
 
 Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--help` to any command to view its options.
@@ -75,6 +94,7 @@ Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--hel
 | Week 2 analytical products | `data/delta/analytics/` |
 | Week 1 storage benchmark | `data/benchmark/<run_id>/` |
 | Week 2 experiment results, SQL and executed plans | `data/benchmark/w2/<run_id>/` |
+| Week 3 update files and evaluation results | `data/updates/`, `data/benchmark/w3/<run_id>/` |
 
 ## Week 2 notes
 
@@ -91,7 +111,7 @@ $env:PYTHONPATH = "src"
 
 Tests use real Spark and Delta with small fixtures and temporary tables, so no raw data is needed and a full run takes minutes. They cover invalid timestamps, NaN and infinity, integer bounds, duplicate selection, day and DST boundaries, missing environment values, join row preservation, Delta read-back, the six analytical queries, product/query equivalence and the experiment harness. `zoneinfo` needs `tzdata` on Windows, pinned in `requirements.txt`.
 
-The suite grew with the project: 27 tests after Week 1 (2026-09-09), 39 after the Week 2 query and product work (2026-09-18), and 55 after the review fixes and the experiment harness (2026-09-19). Full-data runs are separate from the fixture suite; Week 1 preserved 9,554,576 unique integrated trips, and the Week 2 experiments ran against that same snapshot.
+The suite grew with the project: 27 tests after Week 1 (2026-09-09), 55 after the Week 2 review and experiment harness (2026-09-19), and 84 after the Week 3 incremental, monitoring and validation work (2026-09-25). Full-data runs are separate from the fixture suite; Week 1 preserved 9,554,576 unique integrated trips, and the Week 2 experiments ran against that same snapshot.
 
 ## Reports and source code
 
@@ -105,6 +125,12 @@ Week 2:
 - [Benchmark report](docs/w2_benchmark_report.md) and [raw timings](docs/w2_benchmark_timings.csv), covering thirteen optimization experiments.
 - [Optimization strategy and trade-offs](docs/w2_design_optimization.md), role C's section of the Week 2 design report.
 - [Role B query design](docs/role_b_query_design.md).
+
+Week 3:
+
+- [Incremental update and analytical consistency](docs/w3_role_a_incremental.md).
+- [Validation, schema evolution and analytical consistency](docs/w3_role_b_validation.md).
+- [Cross-role monitoring, incremental and validation interfaces](docs/w3_interfaces.md).
 
 Shared:
 

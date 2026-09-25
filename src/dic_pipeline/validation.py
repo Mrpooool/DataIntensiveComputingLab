@@ -1,45 +1,150 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
 from functools import reduce
 from operator import and_, or_
 from typing import Any
 
 from pyspark.sql import Column, DataFrame, Window, functions as F
+from pyspark.sql.types import StructField, StructType
 
 
 Rule = tuple[str, Column]
+RuleBuilder = Callable[
+    [DataFrame, Mapping[str, Any], Mapping[str, Any]],
+    tuple[list[Rule], list[Rule]],
+]
+
+
+def _type_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "simpleString"):
+        value = value.simpleString()
+    normalized = str(value).strip().lower()
+    aliases = {
+        "integer": "int",
+        "bigint": "long",
+        "float": "float",
+        "float64": "double",
+        "boolean": "boolean",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _schema_fields(
+    schema: Sequence[str | StructField] | StructType,
+) -> list[dict[str, Any]]:
+    items: Sequence[str | StructField]
+    items = schema.fields if isinstance(schema, StructType) else schema
+    fields: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, StructField):
+            fields.append(
+                {
+                    "name": item.name,
+                    "type": _type_name(item.dataType),
+                    "nullable": bool(item.nullable),
+                }
+            )
+        else:
+            fields.append({"name": str(item), "type": None, "nullable": None})
+    return fields
+
+
+def _allowed_additions(policy: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    configured = policy.get("allow_add", {})
+    if isinstance(configured, Mapping):
+        allowed = {}
+        for name, value in configured.items():
+            if isinstance(value, Mapping):
+                spec = dict(value)
+            elif value is None:
+                spec = {}
+            else:
+                spec = {"type": value}
+            if "type" in spec:
+                spec["type"] = _type_name(spec["type"])
+            allowed[str(name)] = spec
+        return allowed
+    return {str(name): {} for name in configured}
 
 
 def check_schema(
-    actual_columns: Sequence[str],
-    expected_schema: Sequence[str],
+    actual_columns: Sequence[str | StructField] | StructType,
+    expected_schema: Sequence[str | StructField] | StructType,
     policy: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compare source columns to the contract; return (accepted, unsupported) changes.
+    """Return accepted and unsupported changes against a source-schema contract.
 
-    Role B owns the full policy. Role A uses this to accept additive columns such as
-    ``humidity`` / ``aqi`` listed in ``policy['allow_add']`` when reading update CSVs.
-    Missing required columns and any other unexpected change are unsupported.
+    Additive evolution is opt-in through ``policy['allow_add']``. Column removal,
+    unlisted additions, type changes, duplicate names, and relaxation of a required
+    non-null field are unsupported. A sequence of names remains supported for CSV
+    header checks; passing ``StructType`` values additionally checks types/nullability.
     """
     policy = dict(policy or {})
-    allow_add = {str(name) for name in policy.get("allow_add", ())}
-    actual = list(actual_columns)
-    expected = list(expected_schema)
-    expected_set = set(expected)
-    actual_set = set(actual)
-    missing = sorted(expected_set - actual_set)
-    extra = sorted(actual_set - expected_set)
+    allow_add = _allowed_additions(policy)
+    actual = _schema_fields(actual_columns)
+    expected = _schema_fields(expected_schema)
+    actual_names = [field["name"] for field in actual]
+    expected_names = [field["name"] for field in expected]
+    actual_by_name = {field["name"]: field for field in actual}
+    expected_by_name = {field["name"]: field for field in expected}
     accepted: list[dict[str, Any]] = []
     unsupported: list[dict[str, Any]] = []
-    for name in missing:
+
+    for name in sorted({name for name in actual_names if actual_names.count(name) > 1}):
+        unsupported.append({"op": "duplicate", "column": name})
+    for name in sorted(set(expected_names) - set(actual_names)):
         unsupported.append({"op": "remove", "column": name})
-    for name in extra:
-        change = {"op": "add", "column": name, "type": "double", "nullable": True}
-        if name in allow_add:
-            accepted.append(change)
-        else:
+    for name in [name for name in actual_names if name not in expected_by_name]:
+        observed = actual_by_name[name]
+        spec = allow_add.get(name)
+        change = {
+            "op": "add",
+            "column": name,
+            "type": observed["type"] or (spec or {}).get("type") or "unknown",
+            "nullable": (
+                observed["nullable"]
+                if observed["nullable"] is not None
+                else bool((spec or {}).get("nullable", True))
+            ),
+        }
+        if spec is None:
             unsupported.append(change)
+            continue
+        expected_type = _type_name(spec.get("type"))
+        if expected_type and observed["type"] and observed["type"] != expected_type:
+            unsupported.append(
+                {
+                    **change,
+                    "op": "change_type",
+                    "expected_type": expected_type,
+                }
+            )
+            continue
+        if spec.get("nullable") is False and observed["nullable"] is True:
+            unsupported.append({**change, "op": "relax_nullability", "nullable": True})
+            continue
+        accepted.append(change)
+
+    for name in [name for name in expected_names if name in actual_by_name]:
+        observed = actual_by_name[name]
+        contract = expected_by_name[name]
+        if observed["type"] and contract["type"] and observed["type"] != contract["type"]:
+            unsupported.append(
+                {
+                    "op": "change_type",
+                    "column": name,
+                    "from": contract["type"],
+                    "to": observed["type"],
+                }
+            )
+        if contract["nullable"] is False and observed["nullable"] is True:
+            unsupported.append(
+                {"op": "relax_nullability", "column": name, "nullable": True}
+            )
     return accepted, unsupported
 
 
@@ -69,7 +174,11 @@ def _append_codes(df: DataFrame, output_column: str, rules: Sequence[Rule]) -> D
     return result
 
 
-def _taxi_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], list[Rule]]:
+def _taxi_rules(
+    df: DataFrame,
+    config: Mapping[str, Any],
+    references: Mapping[str, Any],
+) -> tuple[list[Rule], list[Rule]]:
     key_columns = [
         "vendor_id",
         "pickup_timestamp_utc",
@@ -118,6 +227,15 @@ def _taxi_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], l
         ("invalid_numeric_value", invalid_numeric),
         ("invalid_location_id", invalid_location),
     ]
+    if "taxi_zone_ids" in references:
+        zone_ids = tuple(int(value) for value in references["taxi_zone_ids"])
+        pickup_missing = F.col("pickup_location_id").isNotNull() & (
+            ~F.col("pickup_location_id").isin(*zone_ids)
+        )
+        dropoff_missing = F.col("dropoff_location_id").isNotNull() & (
+            ~F.col("dropoff_location_id").isin(*zone_ids)
+        )
+        errors.append(("missing_reference_record", pickup_missing | dropoff_missing))
     flags: list[Rule] = [
         ("zero_trip_distance", F.col("trip_distance") == 0),
         ("zero_trip_duration", F.col("trip_duration_seconds") == 0),
@@ -130,8 +248,13 @@ def _taxi_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], l
     return errors, flags
 
 
-def _weather_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule], list[Rule]]:
+def _weather_rules(
+    df: DataFrame,
+    config: Mapping[str, Any],
+    references: Mapping[str, Any],
+) -> tuple[list[Rule], list[Rule]]:
     del config
+    del references
     numeric_columns = (
         "temp", "rhum", "prcp", "snwd", "wdir", "wspd", "wpgt", "pres", "cldc", "coco",
     )
@@ -154,6 +277,16 @@ def _weather_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule]
         ("missing_required_value", F.col("temp").isNull() | F.col("rhum").isNull()),
         ("invalid_numeric_value", invalid_numeric),
     ]
+    if "humidity" in df.columns:
+        errors.extend(
+            [
+                ("incomplete_record", F.col("humidity").isNull()),
+                (
+                    "invalid_attribute_value",
+                    _nonfinite(F.col("humidity")) | ~F.col("humidity").between(0, 100),
+                ),
+            ]
+        )
     flags: list[Rule] = [
         ("missing_precipitation", F.col("prcp").isNull()),
         ("missing_weather_code", F.col("coco").isNull()),
@@ -162,9 +295,12 @@ def _weather_rules(df: DataFrame, config: Mapping[str, Any]) -> tuple[list[Rule]
 
 
 def _air_quality_rules(
-    df: DataFrame, config: Mapping[str, Any]
+    df: DataFrame,
+    config: Mapping[str, Any],
+    references: Mapping[str, Any],
 ) -> tuple[list[Rule], list[Rule]]:
     del config
+    del references
     key_columns = [
         "state_code",
         "county_code",
@@ -189,6 +325,16 @@ def _air_quality_rules(
             | (F.col("measurement_unit") != "Micrograms/cubic meter (LC)"),
         ),
     ]
+    if "aqi" in df.columns:
+        errors.extend(
+            [
+                ("incomplete_record", F.col("aqi").isNull()),
+                (
+                    "invalid_attribute_value",
+                    _nonfinite(F.col("aqi")) | ~F.col("aqi").between(0, 500),
+                ),
+            ]
+        )
     flags: list[Rule] = [
         ("qualified_measurement", F.col("qualifier").isNotNull()),
     ]
@@ -196,9 +342,12 @@ def _air_quality_rules(
 
 
 def _taxi_zone_rules(
-    df: DataFrame, config: Mapping[str, Any]
+    df: DataFrame,
+    config: Mapping[str, Any],
+    references: Mapping[str, Any],
 ) -> tuple[list[Rule], list[Rule]]:
     del config
+    del references
     errors: list[Rule] = [
         ("missing_primary_key_component", F.col("location_id").isNull()),
         ("invalid_location_id", ~F.col("location_id").between(1, 265)),
@@ -212,22 +361,60 @@ def _taxi_zone_rules(
     return errors, []
 
 
-RULE_BUILDERS = {
+RULE_BUILDERS: dict[str, RuleBuilder] = {
     "taxi": _taxi_rules,
     "weather": _weather_rules,
     "air_quality": _air_quality_rules,
     "taxi_zones": _taxi_zone_rules,
 }
 
+_EXTENSION_RULE_BUILDERS: dict[str, list[RuleBuilder]] = defaultdict(list)
+
+
+def register_rule_builder(dataset: str, builder: RuleBuilder) -> None:
+    """Register an additional rule builder without changing validation core code.
+
+    Use ``dataset='*'`` for a generic rule applied to every dataset. Registration is
+    idempotent for the same function object, which keeps notebooks and tests predictable.
+    """
+    builders = _EXTENSION_RULE_BUILDERS[str(dataset)]
+    if builder not in builders:
+        builders.append(builder)
+
+
+def unregister_rule_builder(dataset: str, builder: RuleBuilder) -> None:
+    """Remove a previously registered extension rule builder."""
+    builders = _EXTENSION_RULE_BUILDERS.get(str(dataset), [])
+    if builder in builders:
+        builders.remove(builder)
+
+
+def initialize_validation_columns(df: DataFrame) -> DataFrame:
+    """Attach empty validation arrays for controlled no-validation measurements."""
+    empty = F.array().cast("array<string>")
+    return df.withColumn("error_reasons", empty).withColumn("quality_flags", empty)
+
 
 def validate_dataset(
-    df: DataFrame, dataset: str, config: Mapping[str, Any]
+    df: DataFrame,
+    dataset: str,
+    config: Mapping[str, Any],
+    *,
+    reference_data: Mapping[str, Any] | None = None,
 ) -> DataFrame:
     """Attach row-level error reasons and non-rejecting quality flags."""
+    references = dict(reference_data or {})
     try:
-        errors, flags = RULE_BUILDERS[dataset](df, config)
+        errors, flags = RULE_BUILDERS[dataset](df, config, references)
     except KeyError as error:
         raise KeyError(f"No validation rules registered for dataset {dataset!r}") from error
+    for builder in (
+        *_EXTENSION_RULE_BUILDERS.get("*", ()),
+        *_EXTENSION_RULE_BUILDERS.get(dataset, ()),
+    ):
+        extra_errors, extra_flags = builder(df, config, references)
+        errors.extend(extra_errors)
+        flags.extend(extra_flags)
     result = _append_codes(df, "error_reasons", errors)
     return _append_codes(result, "quality_flags", flags)
 

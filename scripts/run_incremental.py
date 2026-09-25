@@ -39,6 +39,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--no-monitoring", action="store_true")
+    parser.add_argument(
+        "--no-validation",
+        action="store_true",
+        help="Disable row business rules for controlled validation-overhead experiments only.",
+    )
     parser.add_argument("--master", default="local[4]")
     parser.add_argument("--driver-memory", default="4g")
     parser.add_argument("--shuffle-partitions", type=int, default=128)
@@ -85,6 +90,7 @@ def main() -> None:
             updates,
             delta_root=args.delta_root,
             run_id=args.run_id,
+            validate=not args.no_validation,
             monitoring=not args.no_monitoring,
         )
         print(json.dumps({"status": "success", "records": records}, default=str, indent=2))
