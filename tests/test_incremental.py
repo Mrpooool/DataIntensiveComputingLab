@@ -102,6 +102,12 @@ class IncrementalTests(unittest.TestCase):
         )
         build_integrated_table(self.spark, delta_root, run_id="seed-integration", monitoring=False)
 
+    def _max_utc(self, path: Path, column: str) -> str:
+        return (
+            self.spark.read.format("delta").load(str(path))
+            .agg(F.date_format(F.max(column), "yyyy-MM-dd HH:mm:ss")).first()[0]
+        )
+
     def test_public_defaults_match_assignment_bands(self):
         from dic_pipeline.incremental import (
             DEFAULT_NEW_HOURS,
@@ -155,6 +161,9 @@ class IncrementalTests(unittest.TestCase):
             self.assertGreaterEqual(manifest["new_count"], 1)
             self.assertGreaterEqual(manifest["duplicate_count"], 1)
             self.assertTrue(Path(manifest["path"]).exists())
+            # A UTC instant whatever the host's timezone (collect() would render local time).
+            self.assertEqual(manifest["source_max_pickup_utc"], self._max_utc(
+                delta_root / "standardized" / "taxi", "pickup_timestamp_utc"))
 
             records = apply_updates(
                 self.spark, [manifest], delta_root=delta_root, run_id="inc-1", monitoring=True
@@ -231,6 +240,10 @@ class IncrementalTests(unittest.TestCase):
             )
             self.assertEqual(weather["schema_changes"][0]["column"], "humidity")
             self.assertEqual(air["schema_changes"][0]["column"], "aqi")
+            self.assertEqual(weather["source_max_hour_utc"], self._max_utc(
+                delta_root / "standardized" / "weather", "weather_hour_utc"))
+            self.assertEqual(air["source_max_hour_utc"], self._max_utc(
+                delta_root / "standardized" / "air_quality", "air_quality_hour_utc"))
 
             records = apply_updates(
                 self.spark, [weather, air], delta_root=delta_root, run_id="env-1", monitoring=False

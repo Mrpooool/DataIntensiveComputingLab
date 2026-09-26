@@ -101,3 +101,9 @@ W2 的独立审查（W2-REVIEW-20260919）确认了 A/B 的五项问题，五项
 ### 真实数据上的监控结果
 
 `--import-legacy` 导入的 W1/W2 历史：Taxi 拒绝 202 行（`dropoff_before_pickup` 180、`timestamp_outside_source_period` 21、`duplicate_record` 1）；最慢为 Taxi 摄入 156.8 秒，其次是 `daily_mobility_summary` 刷新 48.7 秒。每个目标只有一次历史运行，趋势查询要等评测或增量运行积累数据。
+
+## 2026-09-27 W3 评测前审阅与全量试跑
+
+- A 的更新生成器用 `collect()` 取回最大时间戳后当作 UTC，又踩了 W2 记录过的坑：`collect()` 给出的是宿主本地时区的 naive 时间。本机 UTC+8 上，Taxi 窗口终点晚 8 小时（`2024-07-01 12:00` 而不是 `04:00`），Weather/Air 的新小时从真实末尾之后 8 小时才开始，中间缺 8 小时；A 的机器 UTC+2，偏 2 小时。单测在 UTC 主机上发现不了，现改为按 `unix_micros` 读取，测试与 Spark 端 `date_format` 结果对比。
+- 全量数据上 Taxi 更新：新行程 668,820（基线 9,554,576 的 7%），重复 143,319（1.5%），按 13 周平移。
+- 用当前代码重建的基线与 W1 一致：Taxi 通过 9,554,576、拒绝 202；B 新增的 `missing_reference_record` 在原数据上为 0。摄入约 5.5 分钟，整合约 2.8 分钟，四张产品全量刷新约 2.9 分钟。

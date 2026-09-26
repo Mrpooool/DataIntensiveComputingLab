@@ -46,12 +46,13 @@ TAXI_DUP_FRACTION = 0.015
 DEFAULT_NEW_HOURS = 24 * 7
 
 
-def _parse_utc(value: str | datetime) -> datetime:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+def _utc_aggregate(frame: DataFrame, column: str, aggregate=F.max) -> datetime | None:
+    """A timestamp aggregate as an aware UTC datetime.
+
+    Read as epoch microseconds: collect() renders timestamps as naive host-local values.
+    """
+    micros = frame.agg(aggregate(F.unix_micros(column))).first()[0]
+    return None if micros is None else datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=micros)
 
 
 def _format_utc(value: datetime) -> str:
@@ -219,7 +220,7 @@ def _generate_taxi_update(
     total = taxi.count()
     if total < 1:
         raise RuntimeError("Cannot generate a Taxi update from an empty standardized table.")
-    max_pickup = _parse_utc(taxi.agg(F.max("pickup_timestamp_utc")).first()[0])
+    max_pickup = _utc_aggregate(taxi, "pickup_timestamp_utc")
     new_count = max(1, min(total, int(round(total * new_fraction))))
     dup_count = max(1, min(total, int(round(total * duplicate_fraction))))
     seed_new = rng.randint(0, 10_000)
@@ -235,12 +236,12 @@ def _generate_taxi_update(
 
     sample_new = _take(taxi, new_fraction, seed_new, new_count)
     sample_dup = _take(taxi, duplicate_fraction, seed_dup, dup_count)
-    sample_min = sample_new.agg(F.min("pickup_timestamp_utc")).first()[0]
+    sample_min = _utc_aggregate(sample_new, "pickup_timestamp_utc", F.min)
     if sample_min is None:
         raise RuntimeError("Taxi new-trip sample is empty.")
     # Shift by whole weeks (keeps weekday and time of day), one week more than the
     # sample's distance to the original maximum, so every new pickup comes after it.
-    weeks = (max_pickup - _parse_utc(sample_min)) // timedelta(weeks=1) + 1
+    weeks = (max_pickup - sample_min) // timedelta(weeks=1) + 1
     shift_secs = int(timedelta(weeks=weeks).total_seconds())
     shifted = (
         sample_new
@@ -265,7 +266,7 @@ def _generate_taxi_update(
     path = out_dir / "taxi_trips_update.parquet"
     # Multi-file write keeps full-scale updates off a single driver-sized part.
     frame.repartition(8).write.mode("overwrite").parquet(str(path))
-    end_pickup = _parse_utc(shifted.agg(F.max("pickup_timestamp_utc")).first()[0])
+    end_pickup = _utc_aggregate(shifted, "pickup_timestamp_utc")
     window_end = end_pickup.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     config = load_dataset_config("taxi")
     return {
@@ -364,8 +365,7 @@ def _generate_weather_update(
     new_hours: int,
 ) -> dict[str, Any]:
     weather = _standardized(spark, delta_root, "weather")
-    max_hour = weather.agg(F.max("weather_hour_utc")).first()[0]
-    max_hour = _parse_utc(max_hour)
+    max_hour = _utc_aggregate(weather, "weather_hour_utc")
     template = weather.orderBy(F.desc("weather_hour_utc")).limit(1).collect()[0]
     hours = new_hours
     path = out_dir / "weather_update.csv"
@@ -430,8 +430,7 @@ def _generate_air_update(
     new_hours: int,
 ) -> dict[str, Any]:
     air = _standardized(spark, delta_root, "air_quality")
-    max_hour = air.agg(F.max("air_quality_hour_utc")).first()[0]
-    max_hour = _parse_utc(max_hour)
+    max_hour = _utc_aggregate(air, "air_quality_hour_utc")
     template = air.orderBy(F.desc("air_quality_hour_utc")).limit(1).collect()[0]
     hours = new_hours
     path = out_dir / "air_quality_update.csv"
