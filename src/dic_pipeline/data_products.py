@@ -202,12 +202,18 @@ def _enrich_product(
     refreshed_at: datetime,
     schema_version: str,
 ) -> DataFrame:
+    """Add the metadata columns and materialize the product once.
+
+    Products are small; without this the key check, the row count and the
+    write would each recompute the aggregation over every trip.
+    """
     return (
         product.crossJoin(created_at_frame)
         .withColumn("data_source", F.lit("integrated_taxi_trips"))
         .withColumn("source_delta_version", F.lit(source_version).cast("long"))
         .withColumn("refreshed_at_utc", F.lit(refreshed_at))
         .withColumn("schema_version", F.lit(schema_version))
+        .localCheckpoint()
     )
 
 
@@ -307,7 +313,7 @@ def refresh_product(
                 effective_mode = "full"
             else:
                 target_rows_before = spark.read.format("delta").load(str(output_path)).count()
-                dirty = _dirty_hour_keys(spark, product_name, source_path, built_from)
+                dirty = _dirty_hour_keys(spark, product_name, source_path, built_from).localCheckpoint()
                 if dirty.limit(1).count() == 0:
                     inserted_count = 0
                     updated_count = 0
