@@ -1,6 +1,6 @@
 # 项目执行方案
 
-依据：[课程要求](Assignment.md)。W1、W2 已完成；W3：A（增量 + 分析一致性）、B（校验扩展 + Schema 策略）与 C①②（监控/评测骨架）已完成，待 C 统一跑评测和汇总交付。
+依据：[课程要求](Assignment.md)。W1、W2、W3 均已完成；W3 评测与交付材料见 [评测报告](docs/w3_evaluation_report.md)、[设计报告](docs/w3_design_report.md)。
 
 ## W1 完成总结
 
@@ -124,9 +124,9 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 - [x] 受影响分析产品可刷新；查询在演进后仍兼容或有明确迁移；无效记录不进入产品（A：`mode=auto|full`；小时产品脏键 MERGE；拒绝路径复用 `prepare`）。
 - [x] 监控表记录约定字段，并有 SQL/入口回答课程四个运维问题（C；增量阶段行已由 A 接入）。
 - [x] 校验框架可扩展，通用与专用规则边界清晰（B：注册式 rule builder、Taxi 引用校验、演进字段完整性/范围校验、Schema 白名单）。
-- [ ] 评测覆盖增量、刷新、存储、校验、监控五类开销，结论有实测支撑（A/B 入口已具备，待 C 接线和全量实测）。
-- [x] B 受影响测试通过；交付前仍需全组完整回归和 `git diff --check`。
-- [ ] 提交完整代码/配置/测试、3–5 页英文设计报告、简短英文 evaluation report、简洁英文 README；同步中文 README。
+- [x] 评测覆盖增量、刷新、存储、校验、监控五类开销，结论有实测支撑（[评测报告](docs/w3_evaluation_report.md)）。
+- [x] 完整回归 86 项通过；`git diff --check` 通过。
+- [x] 提交完整代码/配置/测试、3–5 页英文设计报告、简短英文 evaluation report、简洁英文 README；同步中文 README。
 
 ## W3 C 阶段状态
 
@@ -137,8 +137,8 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | C③ 接口对齐 | A/B 已确认并实现 [docs/w3_interfaces.md](docs/w3_interfaces.md) 的增量、校验和监控接口 | complete |
 | C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | complete（A 已改，PR #9） |
 | C⑤ 修复与接线 | A 的四处问题（Taxi 时间、auto 刷新脏键、apply 失败后重跑、覆盖窗口）由 C 修复；六项计时 + 存储报告全部接通，见 [progress.md](progress.md) | complete（`c/w3-fixes`） |
-| C⑥ 全量评测 | 用当前 `main` 代码重建基线（B 改了 `rule_version` 和 Taxi 规则），再在同一版本上一次跑完 | pending |
-| C⑦ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
+| C⑥ 全量评测 | 用当前代码在 `data/benchmark/w3/baseline` 重建基线，再在同一版本（`adf0508`）上跑完六项计时与存储报告 | complete（见 [评测报告](docs/w3_evaluation_report.md)） |
+| C⑦ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | complete（`submissions/Week3_submission_2026-09-27.zip`） |
 
 ## W3 B 阶段状态
 
@@ -156,3 +156,5 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | --- | --- | --- |
 | 用切片脚本删除 `REFRESH_METADATA_SCHEMA` 时吞掉了一个空格，得到 `ProductBuilder =Callable` | 1 | `git diff` 审阅时发现，用 sed 修正；语法本身合法，测试未受影响 |
 | Bash 中 `cd` 进 `sql/monitoring/` 后工作目录被保留，后续相对路径命令落在错误目录 | 1 | 之后的命令都先 `cd` 到仓库根目录的绝对路径 |
+| 全量试跑时更新生成器的时间差 8 小时（`collect()` 返回宿主本地 naive 时间） | 1 | 按 `unix_micros` 读取；测试与 Spark 端 UTC 格式化结果对比 |
+| 第一次全量评测 auto 刷新比 full 慢 54% | 1 | 惰性 DataFrame 被重复求值；物化产品结果与脏小时后重跑全部评测 |

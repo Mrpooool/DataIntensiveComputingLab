@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-25：W1、W2 已完成；W3 中 A 的增量/刷新已合入 `main`，B 的校验扩展与一致性策略已在 `feat/w3-role-b-validation` 完成，C 的监控与评测骨架已完成；尚待最终评测和提交材料汇总。详见 [task_plan.md](task_plan.md)。
+截至 2026-09-27：W1、W2、W3 均已完成。W3 的 A、B、C 代码都已进 `main`（PR #8–#10），C 在 `c/w3-fixes` 修复了增量实现的问题、完成全量评测，并整理了设计报告、评测报告、中英 README 与提交包。详见 [task_plan.md](task_plan.md)。
 
 ## W1 已完成
 
@@ -90,7 +90,7 @@ CLI：`scripts.run_incremental generate \| apply`；产品：`scripts.run_data_p
 
 | 问题 | 位置（修复前） | 修复 |
 | --- | --- | --- |
-| Taxi 新行程只往后挪约 1 天，大部分仍在 1–3 月，不满足作业“timestamps occurring after the latest trip” | `incremental.py` 平移量 = 原最大时间 + 1 天 − 样本最大时间 | 按整周平移，周数 = 样本最早时间到原最大时间的整周数 + 1；保留星期和时刻。按全量数据的时间范围推算为平移 13 周，新行程落在 4–6 月（待全量评测确认） |
+| Taxi 新行程只往后挪约 1 天，大部分仍在 1–3 月，不满足作业“timestamps occurring after the latest trip” | `incremental.py` 平移量 = 原最大时间 + 1 天 − 样本最大时间 | 按整周平移，周数 = 样本最早时间到原最大时间的整周数 + 1；保留星期和时刻。全量数据上实际平移 13 周：原行程止于 2024-04-01 03:59:59 UTC，668,820 条新行程落在 4–6 月，窗口终点变为 2024-07-01 04:00 |
 | auto 刷新按“快照 run_id”找脏小时：走过 `sync-integrated`，或两次 apply 之间没刷新，已有小时的计数不会更新；A 的对齐测试只覆盖新增小时 | `data_products._dirty_hour_keys`、`last_update_affects.json` | 产品是否刷新改为比较产品的 `source_delta_version` 与当前整合版本；脏小时 = 整合表中不属于该版本已有 run_id 的行程所在小时。删除 `last_update_affects.json` 与 `PRODUCTS_BY_DATASET` |
 | apply 在 MERGE 后失败，重跑插入 0 行，整合表永久缺这批行程（只能手动 `sync-integrated`）；另把 66.9 万个 `record_id` collect 到 driver 再 `isin` | `apply_updates` | 整合步骤改为追加“run_id 不在整合表里的标准化 Taxi 行”，重跑自动补齐，lineage 同时补上；删除 `sync_integrated_from_standardized` 与 CLI 子命令 |
 | 覆盖窗口写在 `metadata/coverage_window.json`，`load_calendar_coverage()` 总是读仓库 `data/delta` 下的文件，与所查快照无关；第二次 apply 还会把窗口重置回配置值 | `queries.py`、`apply_updates` | 窗口随 `completed_batch.json` 进入 `completed_integration.json` 的 `coverage_window`；`load_calendar_coverage(snapshot=...)` 从快照读，查询 CLI 传入；apply 从上一批的窗口继续延伸 |
@@ -100,3 +100,26 @@ CLI：`scripts.run_incremental generate \| apply`；产品：`scripts.run_data_p
 评测接线（`w3_evaluation.py`）：六项计时（三项监控开销、`validation_overhead`、`incremental_update`、`analytical_refresh`）加一份不计时的存储开销报告。更新文件由评测脚本从基线生成（seed 0），并先在一份基线副本上应用一次（不计时），刷新对比从这份副本开始，其存储报告与基线对比即存储开销。`analytical_refresh` 的一致性检查从行数改为每个产品的行数 + 内容哈希（排除元数据列，double 取 6 位小数），只比行数测不出上面第二个问题。校验开关前后通过行数本就不同，对照改比处理行数。
 
 验证：受影响的 5 个套件 35 项 OK（2,230 秒），其余 8 个套件 51 项 OK（699 秒），全部 86 项通过；`git diff --check` 通过。新增用例覆盖已有小时收到新行程、MERGE 后崩溃再重跑、评测在更新后跑通 full/auto 刷新且内容一致。
+
+全量试跑又发现两处，均已修复并补测试：
+
+- 生成器用 `collect()` 读最大时间戳，得到的是宿主本地时区的 naive 时间，本机上 Taxi 窗口终点晚 8 小时、Weather/Air 新小时与原数据之间空 8 小时（`0c8d49d`，改为按 `unix_micros` 读）。
+- auto 刷新比 full 慢 54%（130.7 秒对 84.9 秒，内容一致）：产品 DataFrame 惰性求值，键检查、计数、MERGE 各扫一遍 1,022 万行整合表。改为产品结果和脏小时各物化一次（`adf0508`），相关 5 个套件 27 项 OK（1,480 秒）。
+
+评测基线：用当前代码在 `data/benchmark/w3/baseline` 重建（`data/delta` 未动），Taxi 通过 9,554,576、拒绝 202，与 W1 一致。
+
+### 2026-09-27 C：全量评测与交付材料
+
+评测在提交 `adf0508` 上完成，两次运行 `20260926T174427Z-1ce27d00`（更新与刷新）和 `20260926T180757Z-afffd333`（校验与监控开销），每项预热一次、交替测三次取中位数，全部输出一致：
+
+| 测量 | 结果 |
+| --- | --- |
+| 增量更新 | 134.4 秒（Taxi MERGE 33.4、Weather 16.3、Air 13.8、整合追加 43.7）；从头摄入 + 整合原数据 312.7 秒。重复应用插入 0 行，随后 `auto` 刷新跳过全部产品 |
+| 分析刷新 | full 66.3 秒，auto 87.2 秒，内容哈希一致；小时产品 MERGE 比重建慢（找脏小时要扫整合表） |
+| 存储 | 快照 2,105.5 → 2,271.8 MB（+7.9%）；快照文件 116 → 517，Weather/Air 各从 1 个变 90 个小文件 |
+| 校验开销 | 176.1 → 223.1 秒（+26.7%），Taxi 占 45.7 秒 |
+| 监控开销 | 摄入 +12.6%、整合 +13.8%、刷新 +59.8%；单行写入探针 5–6.5 秒（首次 15 秒），与数据量无关 |
+
+另在基线副本上按 README 跑了一遍 W3 命令（generate → apply → auto → 重复 apply → auto → Q3 → 运维报告）：Q3 日历延伸到 7 月 1 日（4,367 小时），运维报告写入 `data/benchmark/w3/monitoring_report.json`。
+
+交付材料：[设计报告](docs/w3_design_report.md)、[评测报告](docs/w3_evaluation_report.md)、[原始样本](docs/w3_evaluation_timings.csv)，中英 README 增加 W3 运行说明与结果，提交包 `submissions/Week3_submission_2026-09-27.zip`（含两份报告的 PDF）。文档已按 humanizer 规则改写。
