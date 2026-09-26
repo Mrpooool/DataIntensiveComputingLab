@@ -10,7 +10,6 @@ from src.dic_pipeline.incremental import (
     UPDATE_DATASETS,
     apply_updates,
     generate_update,
-    sync_integrated_from_standardized,
 )
 from src.dic_pipeline.ingestion import create_spark
 
@@ -19,8 +18,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("generate", "apply", "sync-integrated"),
-        help="generate update files, apply manifests, or append missing taxi into integrated",
+        choices=("generate", "apply"),
+        help="generate update files or apply their manifests",
     )
     parser.add_argument("--delta-root", type=Path, default=Path("data/delta"))
     parser.add_argument("--out-dir", type=Path, default=Path("data/updates"))
@@ -71,16 +70,6 @@ def main() -> None:
                 json.dumps(manifests, indent=2) + "\n", encoding="utf-8"
             )
             print(json.dumps({"status": "success", "manifests": manifests, "path": str(manifest_path)}, indent=2))
-            return
-
-        if args.command == "sync-integrated":
-            record = sync_integrated_from_standardized(
-                spark,
-                delta_root=args.delta_root,
-                run_id=args.run_id,
-                monitoring=not args.no_monitoring,
-            )
-            print(json.dumps({"status": "success", "record": record}, default=str, indent=2))
             return
 
         manifest_path = args.manifests or (args.out_dir / "update_manifests.json")

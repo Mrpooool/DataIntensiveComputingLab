@@ -185,6 +185,9 @@ def publish_integration_snapshot(
         "integrated_version": version,
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Set by incremental updates; without it the configured Taxi window applies.
+    if source_batch.get("coverage_window"):
+        snapshot["coverage_window"] = dict(source_batch["coverage_window"])
     manifest = root / INTEGRATION_MANIFEST
     manifest.parent.mkdir(parents=True, exist_ok=True)
     pending = manifest.with_suffix(".tmp")

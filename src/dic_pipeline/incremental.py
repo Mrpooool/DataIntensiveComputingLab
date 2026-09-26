@@ -37,8 +37,6 @@ from .validation import check_schema
 
 
 UPDATE_DATASETS = ("taxi", "weather", "air_quality")
-COVERAGE_WINDOW = "metadata/coverage_window.json"
-LAST_UPDATE_AFFECTS = "metadata/last_update_affects.json"
 BATCH_MANIFEST = "metadata/completed_batch.json"
 
 # Assignment defaults for the public generate API / CLI (Task 1).
@@ -47,16 +45,6 @@ TAXI_NEW_FRACTION = 0.07
 TAXI_DUP_FRACTION = 0.015
 DEFAULT_NEW_HOURS = 24 * 7
 
-PRODUCTS_BY_DATASET = {
-    "taxi": (
-        "daily_mobility_summary",
-        "taxi_zone_statistics",
-        "weather_impact_summary",
-        "air_quality_impact_summary",
-    ),
-    "weather": ("weather_impact_summary",),
-    "air_quality": ("air_quality_impact_summary",),
-}
 
 def _parse_utc(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
@@ -247,14 +235,13 @@ def _generate_taxi_update(
 
     sample_new = _take(taxi, new_fraction, seed_new, new_count)
     sample_dup = _take(taxi, duplicate_fraction, seed_dup, dup_count)
-    sample_max = sample_new.agg(F.max("pickup_timestamp_utc")).first()[0]
-    if sample_max is None:
+    sample_min = sample_new.agg(F.min("pickup_timestamp_utc")).first()[0]
+    if sample_min is None:
         raise RuntimeError("Taxi new-trip sample is empty.")
-    sample_max = _parse_utc(sample_max)
-    # Shift the whole sample block so every new pickup is after the original maximum.
-    shift_secs = int((max_pickup + timedelta(days=1) - sample_max).total_seconds())
-    if shift_secs < 3600:
-        shift_secs = 3600
+    # Shift by whole weeks (keeps weekday and time of day), one week more than the
+    # sample's distance to the original maximum, so every new pickup comes after it.
+    weeks = (max_pickup - _parse_utc(sample_min)) // timedelta(weeks=1) + 1
+    shift_secs = int(timedelta(weeks=weeks).total_seconds())
     shifted = (
         sample_new
         .withColumn(
@@ -386,9 +373,11 @@ def _generate_weather_update(
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
+        base_rhum = float(template["rhum"] if template["rhum"] is not None else 60.0)
         for index in range(hours):
             hour = max_hour + timedelta(hours=index + 1)
-            humidity = round(20.0 + rng.random() * 80.0, 1)
+            # rhum already is relative humidity; the new column must agree with it.
+            humidity = round(min(100.0, max(20.0, base_rhum + rng.uniform(-10.0, 10.0))), 1)
             writer.writerow({
                 "year": hour.year,
                 "month": hour.month,
@@ -397,7 +386,7 @@ def _generate_weather_update(
                 "temp": float(template["temp"] if template["temp"] is not None else 5.0)
                 + rng.uniform(-1.0, 1.0),
                 "temp_source": template["temp_source"] or "isd_lite",
-                "rhum": float(template["rhum"] if template["rhum"] is not None else 60.0),
+                "rhum": humidity,
                 "rhum_source": template["rhum_source"] or "isd_lite",
                 "prcp": 0.0,
                 "prcp_source": "isd_lite",
@@ -594,13 +583,12 @@ def apply_updates(
     lineage = list(batch.get("lineage") or [batch["run_id"]])
     if lineage[-1] != batch["run_id"]:
         lineage.append(batch["run_id"])
-    lineage.append(current_run_id)
 
-    coverage_start = str(load_dataset_config("taxi")["valid_pickup_start_utc"])
-    coverage_end = str(load_dataset_config("taxi")["valid_pickup_end_utc_exclusive"])
+    # Extend the window a previous update published, not the configured one.
+    coverage = batch.get("coverage_window") or load_dataset_config("taxi")
+    coverage_start = str(coverage["valid_pickup_start_utc"])
+    coverage_end = str(coverage["valid_pickup_end_utc_exclusive"])
     records: list[dict[str, Any]] = []
-    affected_datasets: list[str] = []
-    new_taxi_ids: DataFrame | None = None
     integrated_before = spark.read.format("delta").load(str(root / INTEGRATED_TABLE)).count()
 
     for update in updates:
@@ -676,20 +664,6 @@ def apply_updates(
                 "rejected_count": metrics["rejected_count"],
                 "scope_excluded_count": metrics.get("scope_excluded_count") or 0,
             })
-            before_ids = None
-            new_record_ids: list[str] = []
-            if dataset == "taxi":
-                before_ids = (
-                    spark.read.format("delta")
-                    .load(str(target_path))
-                    .select("record_id")
-                )
-                new_record_ids = [
-                    str(row.record_id)
-                    for row in result.accepted.join(before_ids, "record_id", "left_anti")
-                    .select("record_id")
-                    .collect()
-                ]
             inserted, updated, duplicate = _merge_accepted(
                 spark, dataset, result.accepted, target_path
             )
@@ -700,19 +674,9 @@ def apply_updates(
             })
             _append_rejected(result.rejected, root / "rejected" / dataset)
             result.release()
-            if dataset == "taxi" and new_record_ids:
-                fresh = (
-                    spark.read.format("delta")
-                    .load(str(target_path))
-                    .where(F.col("record_id").isin(new_record_ids))
-                )
-                new_taxi_ids = (
-                    fresh if new_taxi_ids is None else new_taxi_ids.unionByName(fresh)
-                )
             if monitoring:
                 output_stats = delta_output_stats(spark, target_path)
             target_after = spark.read.format("delta").load(str(target_path)).count()
-            affected_datasets.append(dataset)
             record = {
                 "dataset": dataset,
                 "run_id": current_run_id,
@@ -770,14 +734,21 @@ def apply_updates(
         )
         record_run(spark, row, root, enabled=monitoring)
 
-    # Integrate newly inserted taxi trips (append-only).
+    # Append-only integration of the standardized Taxi rows whose ingestion run the
+    # integrated table has not seen: this run's inserts, plus those of an earlier
+    # apply that failed after its MERGE (a rerun inserts nothing new itself).
     integ_started_at = utc_now()
     integ_started = perf_counter()
-    integ_inserted = 0
     try:
-        if new_taxi_ids is not None and new_taxi_ids.limit(1).count():
-            integ_result = _append_integrated(spark, root, new_taxi_ids)
-            integ_inserted = int(integ_result.get("inserted") or 0)
+        integrated_runs = (
+            spark.read.format("delta").load(str(root / INTEGRATED_TABLE))
+            .select("run_id").distinct()
+        )
+        pending = _standardized(spark, root, "taxi").join(integrated_runs, "run_id", "left_anti")
+        pending_runs = sorted(str(row.run_id) for row in pending.select("run_id").distinct().collect())
+        integ_inserted = int(_append_integrated(spark, root, pending).get("inserted") or 0)
+        earlier = [value for value in pending_runs if value != current_run_id and value not in lineage]
+        lineage += [*earlier, current_run_id]
         versions = {
             name: _table_version(spark, root / "standardized" / name) for name in DATASETS
         }
@@ -791,28 +762,7 @@ def apply_updates(
             },
         }
         _atomic_write_json(root / BATCH_MANIFEST, batch_payload)
-        _atomic_write_json(
-            root / COVERAGE_WINDOW,
-            {
-                "valid_pickup_start_utc": coverage_start,
-                "valid_pickup_end_utc_exclusive": coverage_end,
-            },
-        )
         publish_integration_snapshot(spark, root, source_batch=batch_payload)
-        products: list[str] = []
-        for name in affected_datasets:
-            products.extend(PRODUCTS_BY_DATASET.get(name, ()))
-        if integ_inserted:
-            products = list(PRODUCTS_BY_DATASET["taxi"])
-        _atomic_write_json(
-            root / LAST_UPDATE_AFFECTS,
-            {
-                "run_id": current_run_id,
-                "datasets": affected_datasets,
-                "products": sorted(set(products)),
-                "integrated_inserted": integ_inserted,
-            },
-        )
     except Exception as error:
         row = run_row(
             run_id=current_run_id,
@@ -856,130 +806,3 @@ def apply_updates(
         "status": "success",
     })
     return records
-
-
-def sync_integrated_from_standardized(
-    spark: SparkSession,
-    *,
-    delta_root: str | Path = DEFAULT_DELTA_ROOT,
-    run_id: str | None = None,
-    monitoring: bool = True,
-) -> dict[str, Any]:
-    """Append standardized taxi rows that are missing from the integrated table.
-
-    Use after a partial ``apply_updates`` that MERGEd taxi into standardized but
-    never reached the integrated append (or when re-applying inserts 0 because
-    those ``record_id`` values already exist).
-    """
-    root = Path(delta_root)
-    current_run_id = run_id or str(uuid4())
-    started_at = utc_now()
-    started = perf_counter()
-    taxi_path = root / "standardized" / "taxi"
-    integrated_path = root / INTEGRATED_TABLE
-    integrated_before = spark.read.format("delta").load(str(integrated_path)).count()
-    existing_ids = spark.read.format("delta").load(str(integrated_path)).select("record_id")
-    missing = (
-        spark.read.format("delta")
-        .load(str(taxi_path))
-        .join(existing_ids, "record_id", "left_anti")
-    )
-    missing_count = missing.count()
-    try:
-        if missing_count == 0:
-            integ_inserted = 0
-        else:
-            result = _append_integrated(spark, root, missing)
-            integ_inserted = int(result.get("inserted") or 0)
-        batch = load_completed_batch(root)
-        lineage = list(batch.get("lineage") or [batch["run_id"]])
-        if lineage[-1] != batch["run_id"]:
-            lineage.append(str(batch["run_id"]))
-        table_run_ids = {
-            str(row.run_id)
-            for row in spark.read.format("delta")
-            .load(str(integrated_path))
-            .select("run_id")
-            .distinct()
-            .collect()
-        }
-        for value in sorted(table_run_ids):
-            if value not in lineage:
-                lineage.append(value)
-        if current_run_id not in lineage:
-            lineage.append(current_run_id)
-        versions = {
-            name: _table_version(spark, root / "standardized" / name) for name in DATASETS
-        }
-        coverage = batch.get("coverage_window") or {}
-        if not coverage:
-            config = load_dataset_config("taxi")
-            coverage = {
-                "valid_pickup_start_utc": str(config["valid_pickup_start_utc"]),
-                "valid_pickup_end_utc_exclusive": str(
-                    config["valid_pickup_end_utc_exclusive"]
-                ),
-            }
-        batch_payload = {
-            "run_id": current_run_id,
-            "lineage": lineage,
-            "versions": versions,
-            "coverage_window": coverage,
-        }
-        _atomic_write_json(root / BATCH_MANIFEST, batch_payload)
-        if coverage:
-            _atomic_write_json(root / COVERAGE_WINDOW, coverage)
-        publish_integration_snapshot(spark, root, source_batch=batch_payload)
-        _atomic_write_json(
-            root / LAST_UPDATE_AFFECTS,
-            {
-                "run_id": current_run_id,
-                "datasets": ["taxi"],
-                "products": list(PRODUCTS_BY_DATASET["taxi"]),
-                "integrated_inserted": integ_inserted,
-            },
-        )
-    except Exception as error:
-        row = run_row(
-            run_id=current_run_id,
-            stage="incremental_update",
-            target="integrated_taxi_trips",
-            mode="incremental",
-            started_at=started_at,
-            execution_seconds=perf_counter() - started,
-            status="failed",
-            error=error,
-            processed_count=missing_count,
-            target_rows_before=integrated_before,
-        )
-        record_run(spark, row, root, enabled=monitoring, error=error)
-        raise
-    integrated_after = spark.read.format("delta").load(str(integrated_path)).count()
-    output_stats = delta_output_stats(spark, integrated_path) if monitoring else {}
-    row = run_row(
-        run_id=current_run_id,
-        stage="incremental_update",
-        target="integrated_taxi_trips",
-        mode="incremental",
-        started_at=started_at,
-        execution_seconds=perf_counter() - started,
-        status="success",
-        processed_count=missing_count,
-        inserted_count=integ_inserted,
-        updated_count=0,
-        duplicate_count=max(missing_count - integ_inserted, 0),
-        rejected_count=0,
-        target_rows_before=integrated_before,
-        target_rows_after=integrated_after,
-        **output_stats,
-    )
-    record_run(spark, row, root, enabled=monitoring)
-    return {
-        "dataset": "integrated_taxi_trips",
-        "run_id": current_run_id,
-        "missing_count": missing_count,
-        "inserted_count": integ_inserted,
-        "target_rows_before": integrated_before,
-        "target_rows_after": integrated_after,
-        "status": "success",
-    }

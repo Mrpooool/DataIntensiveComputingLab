@@ -75,7 +75,7 @@ apply_updates(spark, updates, *, delta_root, run_id, validate=True, monitoring=T
 
 - `generate_update` writes one update file for `taxi`, `weather` or `air_quality` and returns its manifest: `dataset`, `path`, `new_count`, `duplicate_count`, `schema_changes`, and the new time window. Deterministic for a given `seed`, because the evaluation regenerates the files.
 - `apply_updates` applies a list of those manifests to standardized, rejected and integrated tables, then republishes `completed_batch.json` and `completed_integration.json`. It writes one `pipeline_runs` row per dataset with `stage="incremental_update"`, `mode="incremental"`, all count columns and `target_rows_before/after`, plus a row for the integrated table. Applying the same files twice must insert 0 rows the second time.
-- `refresh_data_products(..., mode="auto" | "full")`: `auto` refreshes only affected products. Each returned record carries `refresh_mode`; a skipped product still writes a row with `mode="skip"`, `status="skipped"`. The evaluation checks that `auto` output equals a `full` rebuild.
+- `refresh_data_products(..., mode="auto" | "full")`: `auto` refreshes only products built from an older integrated version than the registered one. Each returned record carries `refresh_mode`; a skipped product still writes a row with `mode="skip"`, `status="skipped"`. The evaluation checks that `auto` output equals a `full` rebuild.
 - Every entry point takes `delta_root` and `run_id`; `scripts.run_integration` and `scripts.run_data_products` now accept `--run-id`.
 
 ## 3. What C needs from B (validation) — confirmed
@@ -91,7 +91,7 @@ The full policy and product-consistency boundaries are in [w3_role_b_validation.
 
 ## 4. Cross-role decisions — confirmed
 
-1. **Validity window.** A records the effective new window in the update manifest and extends the configuration used by `prepare`; B treats the new bound as a rule-version change; the coverage manifest extends Q3–Q5's zero-demand calendar over the same period.
+1. **Validity window.** A records the effective new window in the update manifest and extends the configuration used by `prepare`; B treats the new bound as a rule-version change; the integration snapshot carries the window as `coverage_window`, and `load_calendar_coverage(snapshot=...)` extends Q3–Q5's zero-demand calendar over the same period.
 2. **Provenance.** Published manifests keep the latest `run_id` and complete `lineage`; verification accepts table run ids as a subset of lineage and requires the latest run at the end.
 3. **Cross-batch duplicates.** `mark_duplicate_rows` compares rows inside one input. The 1–2% copied Taxi trips only show up against the existing table (anti-join or MERGE on `record_id`); they count as `duplicate_count`, not `rejected_count`.
 4. **Reading an evolved source.** The update reader inspects the CSV header or Parquet schema first, calls `check_schema`, and parses only the original schema plus accepted columns. It does not trust the manifest's claim.
@@ -99,12 +99,12 @@ The full policy and product-consistency boundaries are in [w3_role_b_validation.
 
 ## 5. How the evaluation uses this
 
-`python -m scripts.run_w3_evaluation --list` shows each measurement and what it still waits for. Every run starts from a fresh copy of the baseline Delta root, so updates and overwrites never leak between runs.
+`python -m scripts.run_w3_evaluation --list` shows each measurement. Every run starts from a fresh copy of the baseline Delta root, so updates and overwrites never leak between runs. Before the update-based measurements, the runner generates the update files from the baseline (seed 0) and applies them once to a copy (untimed); the refresh comparison starts from that copy.
 
-| Measurement | Needs |
-| --- | --- |
-| `monitoring_overhead_ingestion` / `_integration` / `_refresh` | ready |
-| `incremental_update` | A: `generate_update`, `apply_updates` |
-| `analytical_refresh` (auto vs full) | A: `apply_updates`, `refresh_data_products(mode=)` |
-| `storage_overhead` (snapshot vs on-disk bytes, commits) | A: `apply_updates` |
-| `validation_overhead` | B entry point is ready; C wires and runs the on/off variants |
+| Measurement | Variants | Equality check |
+| --- | --- | --- |
+| `monitoring_overhead_ingestion` / `_integration` / `_refresh` | monitoring off / on | row counts |
+| `validation_overhead` | full ingestion, `validate=False` / `True` | in-scope input rows per dataset |
+| `incremental_update` | `apply_updates` on the baseline | inserted / updated / duplicate / rejected per target |
+| `analytical_refresh` | `refresh_data_products(mode="full")` / `"auto"` after the updates | row count and content hash of every product |
+| storage overhead (not timed) | storage report of the updated copy against the baseline | none |

@@ -9,7 +9,13 @@ import platform
 from uuid import uuid4
 
 from src.dic_pipeline.ingestion import DEFAULT_DATA_DIR, DEFAULT_DELTA_ROOT, create_spark
-from src.dic_pipeline.w3_evaluation import build_measurements, run_measurement, storage_report
+from src.dic_pipeline.w3_evaluation import (
+    build_measurements,
+    prepare_updates,
+    remove_tree,
+    run_measurement,
+    storage_report,
+)
 
 
 def save_json(path: Path, value) -> None:
@@ -40,15 +46,15 @@ def main() -> None:
     measurements = build_measurements(args.data_dir)
     if args.list:
         for measurement in measurements:
-            state = f"pending: {measurement.pending}" if measurement.pending else "ready"
-            print(f"{measurement.name:<34} {measurement.metric:<26} {state}")
+            print(f"{measurement.name:<34} {measurement.metric:<26} {measurement.description}")
         return
-    if args.measurement:
-        known = {measurement.name for measurement in measurements}
-        unknown = sorted(set(args.measurement) - known)
-        if unknown:
-            raise SystemExit(f"Unknown measurements {unknown}; choose from {sorted(known)}")
-        measurements = [m for m in measurements if m.name in args.measurement]
+    selected = args.measurement or [measurement.name for measurement in measurements]
+    unknown = sorted(set(selected) - {measurement.name for measurement in measurements})
+    if unknown:
+        raise SystemExit(f"Unknown measurements {unknown}; choose from "
+                         f"{[measurement.name for measurement in measurements]}")
+    # Only the update-based measurements are pending before prepare_updates.
+    needs_updates = any(m.pending for m in measurements if m.name in selected)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
     output = args.output_root / run_id
@@ -89,15 +95,31 @@ def main() -> None:
                 "order": "variants alternated every repeat",
                 "workspace": "every run, warm-up included, starts from a fresh copy of the baseline "
                              "Delta root in its own directory; copying is not timed",
-                "timer": "wall clock around the stage call; per-stage times come from the run's "
-                         "own pipeline_runs rows",
-                "equality": "every run must reproduce the first run's output counts, or the "
-                            "measurement is reported as a mismatch without timings",
+                "timer": "wall clock around the stage call and its output-signature read (the "
+                         "same for both variants); per-stage times come from the run's own "
+                         "pipeline_runs rows",
+                "equality": "every run must reproduce the first run's output signature (row "
+                            "counts; content hashes for product refreshes), or the measurement "
+                            "is reported as a mismatch without timings",
                 "os_cache": "uncontrolled; the warm-up absorbs cold reads",
             },
             "measurements": [],
         }
-        save_json(output / "results.json", result)
+        updated_root = None
+        if needs_updates:
+            print("Preparing update files and the updated baseline (untimed)", flush=True)
+            manifests, updated_root = prepare_updates(
+                spark, args.baseline_root, output, f"{run_id}-setup"
+            )
+            measurements = build_measurements(args.data_dir, manifests)
+            # Storage overhead: the updated copy against result["baseline"]["storage"].
+            result["updates"] = {
+                "manifests": manifests,
+                "root": str(updated_root),
+                "storage": storage_report(spark, updated_root),
+            }
+            save_json(output / "results.json", result)
+        measurements = [m for m in measurements if m.name in selected]
 
         def progress(entry):
             print(f"  {entry['variant']:<16} {entry['phase']}{entry['repeat'] or '':<3} "
@@ -107,7 +129,8 @@ def main() -> None:
             print(f"{measurement.name}", flush=True)
             outcome = run_measurement(
                 spark, measurement, baseline_root=args.baseline_root,
-                workspace_root=output / "workspace", run_prefix=run_id, repeats=args.repeats,
+                workspace_root=output / "workspace", run_prefix=run_id,
+                updated_root=updated_root, repeats=args.repeats,
                 keep_workspaces=args.keep_workspaces, on_run=progress,
             )
             result["measurements"].append(outcome)
@@ -122,6 +145,8 @@ def main() -> None:
         result["status"] = "failed" if mismatches else "success"
         result["mismatches"] = mismatches
         save_json(output / "results.json", result)
+        if updated_root is not None and not args.keep_workspaces:
+            remove_tree(updated_root)
         print(f"Evaluation {result['status']}: {output / 'results.json'}", flush=True)
         if mismatches:
             raise SystemExit(1)

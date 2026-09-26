@@ -8,6 +8,7 @@ from src.dic_pipeline.ingestion import DEFAULT_DELTA_ROOT, create_spark
 from src.dic_pipeline.queries import (
     DEFAULT_QUERY_CONFIG,
     QUERY_DEFINITIONS,
+    load_calendar_coverage,
     render_query,
     run_query,
 )
@@ -45,6 +46,7 @@ def main() -> None:
     spark.sparkContext.setLogLevel("ERROR")
     try:
         snapshot = register_analytics_inputs(spark, args.delta_root)
+        coverage = load_calendar_coverage(snapshot=snapshot)
         print(
             f"Registered integrated Delta version {snapshot['integrated_version']} "
             f"from {snapshot['integrated_path']}"
@@ -59,6 +61,7 @@ def main() -> None:
                         config_path=args.config,
                         start_date=args.start_date,
                         end_date=args.end_date,
+                        coverage=coverage,
                     )
                 )
             result = run_query(
@@ -67,6 +70,7 @@ def main() -> None:
                 config_path=args.config,
                 start_date=args.start_date,
                 end_date=args.end_date,
+                coverage=coverage,
             )
             if args.explain:
                 result.explain(mode="formatted")

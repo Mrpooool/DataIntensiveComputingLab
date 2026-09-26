@@ -8,6 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from delta.tables import DeltaTable
 from pyspark.sql import functions as F
 
 from dic_pipeline.data_products import refresh_data_products
@@ -133,9 +134,13 @@ class IncrementalTests(unittest.TestCase):
             before_taxi = self.spark.read.format("delta").load(
                 str(delta_root / "standardized" / "taxi")
             ).count()
-            before_integrated = self.spark.read.format("delta").load(
-                str(delta_root / "integrated" / "integrated_taxi_trips")
-            ).count()
+            integrated_path = str(delta_root / "integrated" / "integrated_taxi_trips")
+            before_integrated = self.spark.read.format("delta").load(integrated_path).count()
+            integrated_version = DeltaTable.forPath(self.spark, integrated_path).history(1).first()["version"]
+            seed_batch = (delta_root / "metadata" / "completed_batch.json").read_text(encoding="utf-8")
+            original_max = self.spark.read.format("delta").load(
+                str(delta_root / "standardized" / "taxi")
+            ).agg(F.max("pickup_timestamp_utc")).first()[0]
 
             manifest = generate_update(
                 self.spark,
@@ -168,14 +173,19 @@ class IncrementalTests(unittest.TestCase):
                 str(delta_root / "standardized" / "taxi")
             ).count()
             self.assertEqual(after_taxi, before_taxi + taxi_record["inserted_count"])
-            after_integrated = self.spark.read.format("delta").load(
-                str(delta_root / "integrated" / "integrated_taxi_trips")
-            ).count()
+            new_trips = self.spark.read.format("delta").load(
+                str(delta_root / "standardized" / "taxi")
+            ).where(F.col("run_id") == "inc-1")
+            self.assertGreater(new_trips.agg(F.min("pickup_timestamp_utc")).first()[0], original_max)
+            after_integrated = self.spark.read.format("delta").load(integrated_path).count()
             self.assertEqual(
                 after_integrated, before_integrated + taxi_record["inserted_count"]
             )
 
-            # Idempotent second apply.
+            # Crash after the MERGE: the integrated append and both manifests never happened.
+            DeltaTable.forPath(self.spark, integrated_path).restoreToVersion(integrated_version)
+            (delta_root / "metadata" / "completed_batch.json").write_text(seed_batch, encoding="utf-8")
+            # The rerun inserts no Taxi row itself but still integrates the first run's trips.
             again = apply_updates(
                 self.spark, [manifest], delta_root=delta_root, run_id="inc-2", monitoring=False
             )
@@ -187,13 +197,18 @@ class IncrementalTests(unittest.TestCase):
                 ).count(),
                 after_taxi,
             )
+            self.assertEqual(
+                self.spark.read.format("delta").load(integrated_path).count(), after_integrated
+            )
 
             batch = json.loads(
                 (delta_root / "metadata" / "completed_batch.json").read_text(encoding="utf-8")
             )
-            self.assertIn("lineage", batch)
-            self.assertEqual(batch["lineage"][-1], "inc-2")
-            self.assertTrue((delta_root / "metadata" / "coverage_window.json").exists())
+            self.assertEqual(batch["lineage"], ["seed-batch", "inc-1", "inc-2"])
+            snapshot = json.loads(
+                (delta_root / "metadata" / "completed_integration.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(snapshot["coverage_window"], batch["coverage_window"])
             runs = self.spark.read.format("delta").load(str(delta_root / PIPELINE_RUNS))
             self.assertTrue(
                 runs.where(
@@ -246,7 +261,7 @@ class IncrementalTests(unittest.TestCase):
                 self.spark, delta_root=delta_root, run_id="prod-full", monitoring=False, mode="full"
             )
             self.assertTrue(all(item["status"] == "success" for item in full))
-            # Weather-only update: no taxi inserts → products list may be weather only.
+            # Weather-only update: the integrated table does not change, so no product does.
             weather = generate_update(
                 self.spark, "weather", root / "updates", delta_root=delta_root, seed=2, new_hours=2
             )
@@ -256,10 +271,8 @@ class IncrementalTests(unittest.TestCase):
             auto = refresh_data_products(
                 self.spark, delta_root=delta_root, run_id="prod-auto", monitoring=True, mode="auto"
             )
-            by_name = {item["product_name"]: item for item in auto}
-            self.assertEqual(by_name["weather_impact_summary"]["status"], "success")
-            self.assertEqual(by_name["daily_mobility_summary"]["status"], "skipped")
-            self.assertEqual(by_name["daily_mobility_summary"]["refresh_mode"], "skip")
+            self.assertEqual({item["status"] for item in auto}, {"skipped"})
+            self.assertEqual({item["refresh_mode"] for item in auto}, {"skip"})
 
 
 if __name__ == "__main__":

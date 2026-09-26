@@ -135,9 +135,10 @@ C 同时负责最终联调、英文/中文 README、设计报告与 evaluation r
 | C① 监控最小链路 | `pipeline_runs` 表、写入接口、三处阶段接入、`--no-monitoring` | complete（`bfe33a2`） |
 | C② 运维查询与评测骨架 | 五条 SQL、`--import-legacy`、`w3_evaluation.py` 与 CLI、pending 机制 | complete（`bfe33a2`） |
 | C③ 接口对齐 | A/B 已确认并实现 [docs/w3_interfaces.md](docs/w3_interfaces.md) 的增量、校验和监控接口 | complete |
-| C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | complete（A 在 `feat/w3-role-a` 已改；合入后 C 可删此项） |
-| C⑤ 全量评测 | A/B 入口齐备后在同一代码版本上一次跑完全部七项 | pending |
-| C⑥ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
+| C④ 放宽溯源校验 | `verify_integrated_provenance` 改为 lineage 子集检查 | complete（A 已改，PR #9） |
+| C⑤ 修复与接线 | A 的四处问题（Taxi 时间、auto 刷新脏键、apply 失败后重跑、覆盖窗口）由 C 修复；六项计时 + 存储报告全部接通，见 [progress.md](progress.md) | complete（`c/w3-fixes`） |
+| C⑥ 全量评测 | 用当前 `main` 代码重建基线（B 改了 `rule_version` 和 Taxi 规则），再在同一版本上一次跑完 | pending |
+| C⑦ 交付材料 | evaluation report、设计报告整合、中英 README、提交包 | pending |
 
 ## W3 B 阶段状态
 

@@ -183,13 +183,15 @@ def _schema_signature(frame: DataFrame) -> list[tuple[str, str]]:
     return [(field.name, field.dataType.simpleString()) for field in frame.schema.fields]
 
 
-def _latest_batch_run_id(snapshot: Mapping[str, Any]) -> str | None:
-    batch = snapshot.get("completed_batch")
-    if isinstance(batch, dict) and batch.get("run_id"):
-        return str(batch["run_id"])
-    if snapshot.get("run_id"):
-        return str(snapshot["run_id"])
-    return None
+def _built_from_version(spark: SparkSession, product_path: Path) -> int | None:
+    """The integrated Delta version the product was last refreshed from; None if never built."""
+    if not (product_path / "_delta_log").exists():
+        return None
+    value = (
+        spark.read.format("delta").load(str(product_path))
+        .agg(F.max("source_delta_version")).first()[0]
+    )
+    return None if value is None else int(value)
 
 
 def _enrich_product(
@@ -212,20 +214,23 @@ def _enrich_product(
 def _dirty_hour_keys(
     spark: SparkSession,
     product_name: str,
-    product_path: Path,
-    latest_run_id: str,
+    integrated_path: str,
+    built_from: int,
 ) -> DataFrame:
-    """Hours touched by the latest integrated run, plus any hour missing from the product."""
+    """Hours holding trips of ingestion runs absent from the version the product was built from.
+
+    Integrated appends are atomic per run, so a run id is either wholly in that
+    version or wholly new; this also covers several updates between refreshes.
+    """
     if product_name == "air_quality_impact_summary":
         trips = _nyc_trips(spark)
     else:
         trips = _trips(spark)
-    from_latest = (
-        trips.where(F.col("run_id") == latest_run_id).select(HOUR_KEY).distinct()
+    seen_runs = (
+        spark.read.format("delta").option("versionAsOf", built_from).load(integrated_path)
+        .select("run_id").distinct()
     )
-    existing = spark.read.format("delta").load(str(product_path)).select(HOUR_KEY).distinct()
-    missing = trips.select(HOUR_KEY).distinct().join(existing, HOUR_KEY, "left_anti")
-    return from_latest.unionByName(missing).distinct()
+    return trips.join(seen_runs, "run_id", "left_anti").select(HOUR_KEY).distinct()
 
 
 def _build_hour_slice(spark: SparkSession, product_name: str, dirty_hours: DataFrame) -> DataFrame:
@@ -254,10 +259,10 @@ def refresh_product(
     """Build or incrementally MERGE one data product, then record monitoring.
 
     ``refresh_mode='full'`` overwrites the product. ``refresh_mode='incremental'``
-    is supported for :data:`INCREMENTAL_HOUR_PRODUCTS`: recompute dirty
-    ``pickup_hour_utc`` keys from the latest integrated ``run_id`` (and any hours
-    still missing from the product) and MERGE them. Falls back to a full rebuild
-    when the product table does not exist yet.
+    is supported for :data:`INCREMENTAL_HOUR_PRODUCTS`: recompute the
+    ``pickup_hour_utc`` keys that received trips since the integrated version the
+    product was built from, and MERGE them. Falls back to a full rebuild when the
+    product table does not exist yet.
     """
     if refresh_mode not in ("full", "incremental"):
         raise ValueError("refresh_mode must be 'full' or 'incremental'")
@@ -297,12 +302,12 @@ def refresh_product(
 
     try:
         if effective_mode == "incremental":
-            latest_run = _latest_batch_run_id(snapshot)
-            if latest_run is None:
+            built_from = _built_from_version(spark, output_path)
+            if built_from is None:
                 effective_mode = "full"
             else:
                 target_rows_before = spark.read.format("delta").load(str(output_path)).count()
-                dirty = _dirty_hour_keys(spark, product_name, output_path, latest_run)
+                dirty = _dirty_hour_keys(spark, product_name, source_path, built_from)
                 if dirty.limit(1).count() == 0:
                     inserted_count = 0
                     updated_count = 0
@@ -471,11 +476,10 @@ def refresh_data_products(
 ) -> list[dict[str, Any]]:
     """Refresh configured products from one registered integrated snapshot.
 
-    ``mode='full'`` rebuilds every selected product. ``mode='auto'`` refreshes only
-    products listed in ``metadata/last_update_affects.json`` (written by
-    ``apply_updates``). Hour-grained products in :data:`INCREMENTAL_HOUR_PRODUCTS`
-    use a dirty-key MERGE; other affected products are fully rebuilt. Unaffected
-    products get a skipped monitoring row.
+    ``mode='full'`` rebuilds every selected product. ``mode='auto'`` skips products
+    already built from the registered integrated version (they get a skipped
+    monitoring row). The others are refreshed: hour-grained products in
+    :data:`INCREMENTAL_HOUR_PRODUCTS` by a dirty-key MERGE, the rest fully.
     """
     if mode not in ("full", "auto"):
         raise ValueError("mode must be 'full' or 'auto'")
@@ -492,19 +496,13 @@ def refresh_data_products(
     snapshot = register_analytics_inputs(spark, delta_root)
     run_id = run_id or str(uuid4())
     products_root = Path(output_root) if output_root is not None else Path(delta_root) / "analytics"
-    affected: set[str] | None = None
-    if mode == "auto":
-        affects_path = Path(delta_root) / "metadata" / "last_update_affects.json"
-        if affects_path.exists():
-            payload = json.loads(affects_path.read_text(encoding="utf-8"))
-            affected = set(payload.get("products") or [])
-        else:
-            affected = set()
+    current_version = int(snapshot["integrated_version"])
     records: list[dict[str, Any]] = []
     for name in names:
-        if mode == "full":
+        built_from = None if mode == "full" else _built_from_version(spark, products_root / name)
+        if built_from is None:
             refresh_mode = "full"
-        elif name not in (affected or set()):
+        elif built_from == current_version:
             refresh_mode = "skip"
         elif name in INCREMENTAL_HOUR_PRODUCTS:
             refresh_mode = "incremental"

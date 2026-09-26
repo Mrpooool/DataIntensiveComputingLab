@@ -10,17 +10,17 @@ Implements Assignment Tasks 1–2 for role A. Contract details live in [w3_inter
 | Incremental apply + integrate append | `dic_pipeline.incremental.apply_updates` |
 | Product refresh modes | `refresh_data_products(..., mode="full"\|"auto")` — auto MERGEs hour products / rebuilds aggregate products |
 | CLI | `python -m scripts.run_incremental generate\|apply` |
-| Coverage window for Q3–Q5 | `metadata/coverage_window.json` (read by `queries.load_calendar_coverage`) |
+| Coverage window for Q3–Q5 | `coverage_window` in `completed_integration.json` (read by `queries.load_calendar_coverage(snapshot=...)`) |
 | Lineage-aware provenance | `integration.verify_integrated_provenance` accepts `lineage` |
 | Additive schema gate | `validation.check_schema` (humidity / aqi allow-list for A; B extends) |
 
 ## Behaviour summary
 
-1. **Taxi update file (Parquet):** CLI / default API uses **7%** new trips (within 5–10%) with timestamps shifted after the latest standardized pickup, plus **1.5%** exact copies (within 1–2%). Built in Spark (no row collect). Unit tests may pass smaller `new_fraction` / `duplicate_fraction` on tiny fixtures only.
-2. **Weather / Air CSV:** default is **seven days** of new hours after the latest observation; Weather adds `humidity` (20–100), Air adds `aqi` (0–500). Tests may pass `new_hours=…` to keep fixtures small.
-3. **`apply_updates`:** `prepare` → MERGE into standardized (insert-only for Taxi; insert/update for hour-keyed Weather/Air) → append rejected → append only newly inserted Taxi rows to the integrated table → rewrite `completed_batch.json` (with `lineage`) and `completed_integration.json` → write `last_update_affects.json` and `coverage_window.json`. Monitoring rows use `stage=incremental_update`.
-4. **Idempotence:** applying the same manifests again inserts 0 Taxi rows.
-5. **Product refresh:** `mode=full` rebuilds every selected product; `mode=auto` refreshes only names in `last_update_affects.json`. For those, `daily_mobility_summary` and `air_quality_impact_summary` use dirty-hour MERGE (`refresh_mode=incremental`); `taxi_zone_statistics` and `weather_impact_summary` are fully rebuilt (`refresh_mode=full`). Unaffected products get `status=skipped` / `mode=skip`.
+1. **Taxi update file (Parquet):** CLI / default API uses **7%** new trips (within 5–10%), shifted by whole weeks (weekday and time of day kept) so every new pickup is after the latest standardized one, plus **1.5%** exact copies (within 1–2%). Built in Spark (no row collect). Unit tests may pass smaller `new_fraction` / `duplicate_fraction` on tiny fixtures only.
+2. **Weather / Air CSV:** default is **seven days** of new hours after the latest observation; Weather adds `humidity` (20–100, equal to that row's `rhum`, which already is relative humidity), Air adds `aqi` (0–500). Tests may pass `new_hours=…` to keep fixtures small.
+3. **`apply_updates`:** `prepare` → MERGE into standardized (insert-only for Taxi; insert/update for hour-keyed Weather/Air) → append rejected → append to the integrated table every standardized Taxi row whose ingestion run it does not hold yet → rewrite `completed_batch.json` (with `lineage` and `coverage_window`) and `completed_integration.json`. Monitoring rows use `stage=incremental_update`.
+4. **Idempotence and recovery:** applying the same manifests again inserts 0 Taxi rows. If an apply fails after its MERGE, the rerun still integrates that run's trips, because the integrated step selects runs missing from the integrated table rather than this call's inserts.
+5. **Product refresh:** `mode=full` rebuilds every selected product; `mode=auto` skips a product whose `source_delta_version` already equals the registered integrated version. For the others, `daily_mobility_summary` and `air_quality_impact_summary` use dirty-hour MERGE (`refresh_mode=incremental`); `taxi_zone_statistics` and `weather_impact_summary` are fully rebuilt (`refresh_mode=full`). Unaffected products get `status=skipped` / `mode=skip`.
 
 ## How to run
 
@@ -28,8 +28,6 @@ Implements Assignment Tasks 1–2 for role A. Contract details live in [w3_inter
 # After a completed W1/W2 Delta root exists under data/delta
 .\.venv\python.exe -m scripts.run_incremental generate --out-dir data/updates --seed 0
 .\.venv\python.exe -m scripts.run_incremental apply --manifests data/updates/update_manifests.json
-# If apply MERGEd taxi but integrated stayed unchanged (partial/idempotent re-apply):
-.\.venv\python.exe -m scripts.run_incremental sync-integrated
 .\.venv\python.exe -m scripts.run_data_products --mode auto
 .\.venv\python.exe -m scripts.run_data_products --mode full
 ```
@@ -48,18 +46,12 @@ Implements Assignment Tasks 1–2 for role A. Contract details live in [w3_inter
 
 | Requirement | How we meet it |
 | --- | --- |
-| Refresh only affected products | `apply_updates` writes `metadata/last_update_affects.json` via `PRODUCTS_BY_DATASET`; `refresh_data_products(mode="auto")` refreshes those names and records `status=skipped` for the rest |
+| Refresh only affected products | Every product reads only the integrated table, so `refresh_data_products(mode="auto")` refreshes a product only when the registered integrated version is newer than the one it was built from (`source_delta_version`), and records `status=skipped` for the rest |
 | Schema evolution | Weather `humidity` / Air `aqi`: generate → `check_schema` allow-list → Delta `ALTER` + MERGE with `mergeSchema` |
 | Query compatibility | Evolved columns are **not** selected into `integrated_taxi_trips`; W2 product builders and Q1–Q6 SQL keep the same grains/keys |
 | Minimize recomputation | Integrated taxi is **append-only** for newly inserted trips; hour-grained products MERGE dirty keys; month/zone and weather-category products selectively full-rebuild; `mode=full` remains for audits |
 
-Affected-product map (`PRODUCTS_BY_DATASET`):
-
-| Updated dataset | Products marked affected |
-| --- | --- |
-| `taxi` | all four (`daily_mobility_summary`, `taxi_zone_statistics`, `weather_impact_summary`, `air_quality_impact_summary`) |
-| `weather` | `weather_impact_summary` only |
-| `air_quality` | `air_quality_impact_summary` only |
+Which updates touch products: a Taxi update appends trips to the integrated table, so all four products are refreshed. Weather and Air Quality updates add hours after the last trip; they change no integrated row, so no product is refreshed (the evolved `humidity` / `aqi` columns are not read by any product).
 
 Refresh strategy under `mode=auto`:
 
@@ -70,7 +62,7 @@ Refresh strategy under `mode=auto`:
 | `taxi_zone_statistics` | **Full rebuild** of that product only |
 | `weather_impact_summary` | **Full rebuild** of that product only |
 
-Dirty hours = distinct `pickup_hour_utc` from integrated trips with the latest batch `run_id`, union hours present in integrated but missing from the product. Those hours are re-aggregated from **all** trips in the hour (so overlapping inserts stay correct), then MERGED (`whenMatchedUpdateAll` / `whenNotMatchedInsertAll`). Missing product table → falls back to full overwrite.
+Dirty hours = distinct `pickup_hour_utc` of integrated trips whose ingestion `run_id` is absent from the integrated version the product was built from (its `source_delta_version`). Appends are atomic per run, so this catches every update since the last refresh, including a rerun after a failure. Those hours are re-aggregated from **all** trips in the hour (so overlapping inserts stay correct), then MERGED (`whenMatchedUpdateAll` / `whenNotMatchedInsertAll`). Missing product table → falls back to full overwrite.
 
 After a successful apply, run:
 
@@ -105,15 +97,9 @@ After a successful apply, run:
 
 ### How does your design reduce unnecessary computation?
 
-1. **Dataset → product dependency map** so weather-only updates do not touch mobility / zone / air products.
+1. **Version check per product**: a product is refreshed only when the integrated table moved past the version it was built from, so weather-only and air-only updates refresh nothing.
 2. **`mode=auto` vs `mode=full`**: auto skips unaffected products; among affected ones, hour-grained products MERGE only dirty keys instead of rewriting the whole product.
-3. **Append-only integrated path** for newly inserted taxi `record_id`s instead of re-joining the entire historical taxi table on every apply.
+3. **Append-only integrated path** for the Taxi runs the integrated table does not hold yet, instead of re-joining the entire historical taxi table on every apply.
 4. **Hour-keyed MERGE** for weather/air standardized tables (insert/update only touched hours).
-5. **Coverage window metadata** (`coverage_window.json`) so Q3–Q5 calendar padding follows the new valid end without a second full trip scan in every query.
+5. **Coverage window in the snapshot** (`coverage_window` in `completed_integration.json`) so Q3–Q5 calendar padding follows the new valid end of exactly the snapshot being queried.
 6. Evolved columns stay on standardized weather/air only until analysts explicitly need them.
-
-## Open hand-offs
-
-- B: extend `check_schema` policy and `prepare(validate=…)`; confirm product refresh boundaries if they differ from `PRODUCTS_BY_DATASET`.
-- C: evaluation measurements `incremental_update` / `analytical_refresh` / `storage_overhead` should now resolve once this branch is merged; confirm **agree** items in `w3_interfaces.md`.
-- Ops: if a partial apply left new taxi in standardized but `integrated_inserted=0`, re-append those trips (or re-run integrate for the missing `record_id`s) before trusting `mode=auto` product outputs.
