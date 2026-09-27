@@ -25,6 +25,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 .\.venv\Scripts\python.exe -m scripts.run_analytical_queries --query all
 .\.venv\Scripts\python.exe -m scripts.run_benchmark          # W1 storage-layout benchmark
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark    # W2 optimization experiments
+.\.venv\Scripts\python.exe -m scripts.run_incremental generate  # W3 update files -> data/updates
+.\.venv\Scripts\python.exe -m scripts.run_incremental apply     # MERGE them, append new trips, republish
+.\.venv\Scripts\python.exe -m scripts.run_data_products --mode auto  # refresh products built from an older snapshot
 .\.venv\Scripts\python.exe -m scripts.run_monitoring_report  # W3 ops queries over metadata/pipeline_runs
 .\.venv\Scripts\python.exe -m scripts.run_w3_evaluation      # W3 production-readiness measurements
 ```
@@ -72,7 +75,7 @@ Products store observed rows only; zero-demand hours are padded at query time fr
 
 ### Time model
 
-Storage and the Spark session are UTC (`spark.sql.session.timeZone=UTC`); analysis is `America/New_York` from `analysis_timezone`. Hourly calendars in Q3–Q5 are clamped to `load_calendar_coverage()` — the `valid_pickup_start_utc` / `valid_pickup_end_utc_exclusive` window from `configs/datasets.json` — because only inside it does "no trips" mean zero demand. `zoneinfo` needs the pinned `tzdata` on Windows.
+Storage and the Spark session are UTC (`spark.sql.session.timeZone=UTC`); analysis is `America/New_York` from `analysis_timezone`. Hourly calendars in Q3–Q5 are clamped to `load_calendar_coverage()` — the `valid_pickup_start_utc` / `valid_pickup_end_utc_exclusive` window from `configs/datasets.json`, or the snapshot's `coverage_window` once incremental updates have extended it — because only inside it does "no trips" mean zero demand. `zoneinfo` needs the pinned `tzdata` on Windows.
 
 ### Monitoring
 

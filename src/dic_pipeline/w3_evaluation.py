@@ -12,16 +12,14 @@ it. Copying happens before the timer starts.
 Variants must produce the same outputs; a run whose output signature differs
 from the first run's makes the measurement fail instead of reporting a time.
 
-Measurements that depend on role A's incremental pipeline or role B's
-validation switch are declared here with the entry point they need and are
-reported as ``pending`` until that entry point exists (see
-``docs/w3_interfaces.md``).
+The update-based measurements share one untimed setup (``prepare_updates``):
+update files generated from the baseline, and a copy of the baseline with them
+applied, which the refresh comparison starts from. Storage overhead is the
+storage report of that copy against the baseline's; it is not timed.
 """
 
 from __future__ import annotations
 
-import importlib
-import inspect
 import os
 import shutil
 import stat
@@ -34,8 +32,9 @@ from typing import Any, Callable, Mapping
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession, functions as F
 
-from .data_products import refresh_data_products
-from .ingestion import DEFAULT_DATA_DIR, ingest_batch, ingest_dataset
+from .data_products import RESERVED_METADATA_COLUMNS, refresh_data_products
+from .incremental import UPDATE_DATASETS, apply_updates, generate_update
+from .ingestion import DEFAULT_DATA_DIR, ingest_batch
 from .integration import build_integrated_table
 from .monitoring import PIPELINE_RUNS
 
@@ -58,12 +57,14 @@ class Measurement:
     variants: tuple[Variant, ...] = ()
     # Copy the baseline Delta root into the workspace; ingestion starts from an empty one.
     needs_baseline: bool = True
-    # Why the measurement cannot run yet: the missing entry point of another role.
+    # Copy the baseline with the updates applied instead (see prepare_updates).
+    after_updates: bool = False
+    # Why the measurement cannot run yet.
     pending: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _remove_tree(path: Path) -> None:
+def remove_tree(path: Path) -> None:
     def make_writable(function, name, _info):
         os.chmod(name, stat.S_IWRITE)
         function(name)
@@ -118,26 +119,46 @@ def stage_rows(spark: SparkSession, root: Path, run_id: str) -> list[dict[str, A
     return [row.asDict() for row in rows]
 
 
-def _optional(module: str, attribute: str) -> Any | None:
-    """A sibling module's function, or None while its owner has not delivered it."""
-    try:
-        return getattr(importlib.import_module(f".{module}", __package__), attribute, None)
-    except ModuleNotFoundError:
-        return None
+def prepare_updates(
+    spark: SparkSession, baseline_root: Path, directory: Path, run_id: str,
+) -> tuple[list[dict[str, Any]], Path]:
+    """Untimed setup: update files generated from the baseline, and a copy with them applied."""
+    manifests = [
+        generate_update(spark, dataset, directory / "updates", delta_root=baseline_root, seed=0)
+        for dataset in UPDATE_DATASETS
+    ]
+    updated_root = fresh_workspace(baseline_root, directory / "baseline_updated")
+    apply_updates(spark, manifests, delta_root=updated_root, run_id=run_id)
+    return manifests, updated_root
 
 
-def _accepts(function: Callable[..., Any], parameter: str) -> bool:
-    return parameter in inspect.signature(function).parameters
+def product_signature(spark: SparkSession, root: Path) -> dict[str, list[int]]:
+    """Row count and an order-independent content hash of every product, metadata excluded.
+
+    Doubles are rounded first: an incremental MERGE sums an hour's trips in a
+    different order than a full rebuild, which can move the last bits.
+    """
+    signature = {}
+    for path in sorted((root / "analytics").iterdir()):
+        frame = spark.read.format("delta").load(str(path))
+        columns = [
+            F.round(F.col(field.name), 6) if field.dataType.typeName() == "double" else F.col(field.name)
+            for field in frame.schema.fields if field.name not in RESERVED_METADATA_COLUMNS
+        ]
+        row = frame.agg(F.count(F.lit(1)), F.bit_xor(F.xxhash64(*columns))).first()
+        signature[path.name] = [int(row[0]), int(row[1] or 0)]
+    return signature
 
 
-# ---- Variants available now -------------------------------------------------------------
+# ---- Variants ---------------------------------------------------------------------------
 
 
-def _ingestion(data_dir: Path, *, monitoring: bool) -> VariantRun:
+def _ingestion(data_dir: Path, *, monitoring: bool = True, validate: bool = True) -> VariantRun:
     def run(spark: SparkSession, root: Path, run_id: str) -> Mapping[str, Any]:
         records = ingest_batch(spark, data_dir=data_dir, delta_root=root, run_id=run_id,
-                               monitoring=monitoring)
-        return {r["dataset"]: [r["accepted_count"], r["rejected_count"]] for r in records}
+                               validate=validate, monitoring=monitoring)
+        # In-scope input rows: validation changes the accepted/rejected split, not this.
+        return {r["dataset"]: r["input_count"] for r in records}
     return run
 
 
@@ -148,29 +169,31 @@ def _integration(*, monitoring: bool) -> VariantRun:
     return run
 
 
-def _refresh(*, monitoring: bool, **options: Any) -> VariantRun:
+def _refresh(*, monitoring: bool = True, mode: str = "full") -> VariantRun:
     def run(spark: SparkSession, root: Path, run_id: str) -> Mapping[str, Any]:
-        records = refresh_data_products(spark, delta_root=root, run_id=run_id,
-                                        monitoring=monitoring, **options)
-        return {r["product_name"]: r["row_count"] for r in records}
+        refresh_data_products(spark, delta_root=root, run_id=run_id,
+                              monitoring=monitoring, mode=mode)
+        return product_signature(spark, root)
     return run
 
 
-def build_measurements(data_dir: str | Path = DEFAULT_DATA_DIR) -> list[Measurement]:
-    """All Task 5 measurements; the ones waiting on role A or B carry ``pending``."""
+def _apply(updates: list[dict[str, Any]]) -> VariantRun:
+    def run(spark: SparkSession, root: Path, run_id: str) -> Mapping[str, Any]:
+        records = apply_updates(spark, updates, delta_root=root, run_id=run_id)
+        return {r["dataset"]: [r.get(key) for key in (
+            "inserted_count", "updated_count", "duplicate_count", "rejected_count")]
+            for r in records}
+    return run
+
+
+def build_measurements(
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+    updates: list[dict[str, Any]] | None = None,
+) -> list[Measurement]:
+    """All Task 5 timings. The update-based ones need the manifests from ``prepare_updates``."""
     data_dir = Path(data_dir)
-    apply_updates = _optional("incremental", "apply_updates")
-    incremental_pending = (
-        None if apply_updates is not None else
-        "role A: dic_pipeline.incremental.generate_update() and apply_updates()"
-    )
-    refresh_pending = (
-        None if _accepts(refresh_data_products, "mode") else
-        "role A: refresh_data_products(mode='auto'|'full') after apply_updates()"
-    )
-    validation_pending = (
-        None if _accepts(ingest_dataset, "validate") else
-        "role B: ingest_dataset(validate=False) / prepare(validate=False)"
+    no_updates = None if updates is not None else (
+        "update files: scripts.run_w3_evaluation generates them from the baseline first"
     )
     return [
         Measurement(
@@ -196,28 +219,28 @@ def build_measurements(data_dir: str | Path = DEFAULT_DATA_DIR) -> list[Measurem
              Variant("monitoring_on", _refresh(monitoring=True))),
         ),
         Measurement(
+            "validation_overhead", "validation overhead",
+            "Full four-dataset ingestion with the validation rules off and on.",
+            (Variant("validation_off", _ingestion(data_dir, validate=False)),
+             Variant("validation_on", _ingestion(data_dir, validate=True))),
+            needs_baseline=False,
+            notes=("Off keeps the in-file duplicate collapse, so the outputs differ only by the "
+                   "rows the rules reject; the per-run split is in each run's stage rows.",),
+        ),
+        Measurement(
             "incremental_update", "incremental update time",
             "Apply the Taxi, Weather and Air Quality update files to the baseline, "
             "including the integrated table, without rebuilding it.",
-            pending=incremental_pending,
+            () if updates is None else (Variant("apply", _apply(updates)),),
+            pending=no_updates,
         ),
         Measurement(
             "analytical_refresh", "analytical refresh time",
-            "After the updates: refresh only the affected products (mode='auto') versus "
-            "rebuilding all four (mode='full'); outputs must be equal.",
-            pending=incremental_pending or refresh_pending,
-        ),
-        Measurement(
-            "storage_overhead", "storage overhead",
-            "Snapshot and on-disk bytes, files and commits of every table before and after "
-            "the updates, from the first measured run only.",
-            pending=incremental_pending,
-        ),
-        Measurement(
-            "validation_overhead", "validation overhead",
-            "The same ingestion or update with validation rules on and off, on a scratch copy "
-            "that is never published.",
-            pending=validation_pending,
+            "After the updates: rebuild all four products (mode='full') versus refresh only "
+            "what changed (mode='auto'); product contents must be equal.",
+            (Variant("full", _refresh(mode="full")), Variant("auto", _refresh(mode="auto"))),
+            after_updates=True,
+            pending=no_updates,
         ),
     ]
 
@@ -232,6 +255,7 @@ def run_measurement(
     baseline_root: Path,
     workspace_root: Path,
     run_prefix: str,
+    updated_root: Path | None = None,
     repeats: int = 3,
     keep_workspaces: bool = False,
     on_run: Callable[[dict[str, Any]], None] | None = None,
@@ -251,8 +275,12 @@ def run_measurement(
     if measurement.pending or not measurement.variants:
         # An entry point that arrived before its variants were wired here is still pending.
         result["status"] = "pending"
-        result["requires"] = measurement.pending or "role C: wire the variants in build_measurements()"
+        result["requires"] = measurement.pending or "variants in build_measurements()"
         return result
+
+    source = None
+    if measurement.needs_baseline:
+        source = updated_root if measurement.after_updates else baseline_root
 
     signature: Mapping[str, Any] | None = None
     schedule = [("warmup", 0, variant) for variant in measurement.variants]
@@ -262,9 +290,7 @@ def run_measurement(
 
     for phase, repeat, variant in schedule:
         run_id = f"{run_prefix}-{measurement.name}-{variant.name}-{phase}{repeat or ''}"
-        workspace = fresh_workspace(
-            baseline_root if measurement.needs_baseline else None, workspace_root / run_id
-        )
+        workspace = fresh_workspace(source, workspace_root / run_id)
         spark.catalog.clearCache()
         started = perf_counter()
         output = dict(variant.run(spark, workspace, run_id))
@@ -274,7 +300,7 @@ def run_measurement(
             "seconds": seconds, "output": output, "stages": stage_rows(spark, workspace, run_id),
         }
         if not keep_workspaces:
-            _remove_tree(workspace)
+            remove_tree(workspace)
         result["runs"].append(entry)
         if on_run is not None:
             on_run(entry)

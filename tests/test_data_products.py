@@ -304,39 +304,30 @@ class DataProductTests(unittest.TestCase):
             )
             before_daily = self._read(root, "daily_mobility_summary").count()
             hour_new = utc(2024, 4, 2, 16)
-            new_trip = (
-                "t6", "batch-2", hour_new, 161, "Midtown Center", "Manhattan", True,
-                4.0, 180, 12.0, True, 1, True, 11.0,
-            )
+            new_trips = [
+                ("t6", "batch-2", hour_new, 161, "Midtown Center", "Manhattan", True,
+                 4.0, 180, 12.0, True, 1, True, 11.0),
+                # A new trip in an hour the products already hold.
+                ("t7", "batch-2", HOUR_FEBRUARY, 161, "Midtown Center", "Manhattan", True,
+                 3.0, 200, 11.0, True, 4, True, 12.0),
+            ]
             write_delta(
-                self.spark.createDataFrame([new_trip], TRIP_SCHEMA),
+                self.spark.createDataFrame(new_trips, TRIP_SCHEMA),
                 root / "integrated" / "integrated_taxi_trips",
                 mode="append",
                 num_files=1,
             )
-            batch2 = {
-                "run_id": "batch-2",
-                "lineage": ["batch-1", "batch-2"],
+            # Published by a later run that added no trips itself (a rerun after a
+            # failure), so the snapshot run_id is not the run the new trips carry.
+            batch3 = {
+                "run_id": "batch-3",
+                "lineage": ["batch-1", "batch-2", "batch-3"],
                 "versions": {dataset: 0 for dataset in DATASETS},
             }
             (root / "metadata" / "completed_batch.json").write_text(
-                json.dumps(batch2), encoding="utf-8"
+                json.dumps(batch3), encoding="utf-8"
             )
-            publish_integration_snapshot(self.spark, root, source_batch=batch2)
-            (root / "metadata" / "last_update_affects.json").write_text(
-                json.dumps({
-                    "run_id": "batch-2",
-                    "datasets": ["taxi"],
-                    "products": [
-                        "daily_mobility_summary",
-                        "taxi_zone_statistics",
-                        "weather_impact_summary",
-                        "air_quality_impact_summary",
-                    ],
-                    "integrated_inserted": 1,
-                }),
-                encoding="utf-8",
-            )
+            publish_integration_snapshot(self.spark, root, source_batch=batch3)
 
             auto = refresh_data_products(
                 self.spark,
@@ -351,6 +342,7 @@ class DataProductTests(unittest.TestCase):
             self.assertEqual(by_name["taxi_zone_statistics"]["refresh_mode"], "full")
             self.assertEqual(by_name["weather_impact_summary"]["refresh_mode"], "full")
             self.assertEqual(by_name["daily_mobility_summary"]["inserted_count"], 1)
+            self.assertEqual(by_name["daily_mobility_summary"]["updated_count"], 1)
             self.assertEqual(
                 self._read(root, "daily_mobility_summary").count(), before_daily + 1
             )

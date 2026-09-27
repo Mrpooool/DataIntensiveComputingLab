@@ -78,7 +78,7 @@ The refresh boundary is based on data dependencies rather than on the presence o
 | --- | --- | --- |
 | `daily_mobility_summary` | affected local dates/hours | key, timezone or metric-definition change |
 | `taxi_zone_statistics` | affected month × zone groups | zone mapping, grouping key or metric-definition change |
-| `weather_impact_summary` | rebuild for Taxi/Weather changes in the current implementation | weather category mapping or join semantics change |
+| `weather_impact_summary` | full rebuild whenever the integrated table changes | weather category mapping or join semantics change |
 | `air_quality_impact_summary` | affected local hours | PM2.5/AQI category mapping or join semantics change |
 
 Adding `humidity` or `aqi` alone does not change any existing product, so no product should be refreshed solely because one of those columns appeared. New rows still affect products through their existing fields and dirty keys. Any future product that uses the evolved attributes must declare its dependency, output schema version and recomputation boundary before publication.

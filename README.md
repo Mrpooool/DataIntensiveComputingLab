@@ -63,24 +63,41 @@ Week 2 reads the snapshot that integration published; no new repository or copie
 .\.venv\Scripts\python.exe -m scripts.run_query_benchmark --experiment q1_partition_pruning --repeats 5
 ```
 
-Week 3 update files and validation reuse the published Week 1/2 Delta root:
+Week 3 updates the published root in place, without a rebuild:
 
 ```powershell
-# Generate deterministic Taxi, Weather and Air Quality updates.
-.\.venv\Scripts\python.exe -m scripts.run_incremental generate --dataset all
+# Write one update file per dataset from the published tables into data/updates/,
+# plus update_manifests.json with the new and duplicate counts and schema changes.
+.\.venv\Scripts\python.exe -m scripts.run_incremental generate
 
-# Validate and merge the updates, then refresh affected products.
+# Validate and MERGE the updates, append the new trips to the integrated table and
+# republish the snapshot. Rerunning after a failure completes the update.
 .\.venv\Scripts\python.exe -m scripts.run_incremental apply
+
+# Refresh only the products built from an older integrated version.
 .\.venv\Scripts\python.exe -m scripts.run_data_products --mode auto
 
-# Inspect validation failures and other operational metrics.
-.\.venv\Scripts\python.exe -m scripts.run_monitoring_report --query validation_failures_by_target
-
-# List or run the isolated production-readiness measurements.
-.\.venv\Scripts\python.exe -m scripts.run_w3_evaluation --list
+# Validation report and operational metrics from metadata/pipeline_runs.
+.\.venv\Scripts\python.exe -m scripts.run_monitoring_report
+.\.venv\Scripts\python.exe -m scripts.run_monitoring_report --query failure_codes_by_target
 ```
 
-Validation is enabled by default. `--no-validation` on ingestion/incremental commands and `--no-monitoring` are evaluation-only controls and must not be used for published runs.
+Schema evolution is opt-in. An update may add a column only if `configs/datasets.json` lists it under `schema_evolution.allow_add` with its type; today that is Weather `humidity` and Air Quality `aqi`. The update reader checks the file's real header or Parquet schema, adds accepted columns to the standardized table as nullable, and records the new `schema_version` (1.1.0) in the monitoring row. A removed, renamed, retyped or unlisted column stops that update with `SchemaValidationError`. The evolved columns stay out of the integrated table, so queries and products are unchanged.
+
+The monitoring report runs five queries: `validation_failures_by_target`, `failure_codes_by_target`, `processing_time_by_target`, `rejected_per_execution` and `processing_time_trend`. Rejected rows themselves are in `data/delta/rejected/<dataset>/` with their `error_reasons`. `--import-legacy` copies the Week 1 and Week 2 run logs into `pipeline_runs` once.
+
+To reproduce the evaluation, build a baseline with the current code in its own root, then run the measurements on copies of it. The baseline is never modified; each run gets a fresh copy.
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_ingestion --dataset all --output-root data/benchmark/w3/baseline
+.\.venv\Scripts\python.exe -m scripts.run_integration --delta-root data/benchmark/w3/baseline
+.\.venv\Scripts\python.exe -m scripts.run_data_products --delta-root data/benchmark/w3/baseline
+
+# All six measurements plus the storage report; --measurement NAME selects one, --list shows them.
+.\.venv\Scripts\python.exe -m scripts.run_w3_evaluation --baseline-root data/benchmark/w3/baseline
+```
+
+Validation is on by default. `--no-validation` and `--no-monitoring` exist for these measurements only; do not use them on the published root.
 
 Integration and benchmarking require a successful four-table batch; a single-table rerun invalidates the completion marker, so rerun `--dataset all` before continuing. Ingestion and integration overwrite their outputs, and each successful integration republishes `data/delta/metadata/completed_integration.json`, which pins the Delta versions every Week 2 query and product reads. Use one ingestion process per output directory; each benchmark creates a new run directory.
 
@@ -94,6 +111,7 @@ Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--hel
 | Week 2 analytical products | `data/delta/analytics/` |
 | Week 1 storage benchmark | `data/benchmark/<run_id>/` |
 | Week 2 experiment results, SQL and executed plans | `data/benchmark/w2/<run_id>/` |
+| Week 3 monitoring table | `data/delta/metadata/pipeline_runs/` |
 | Week 3 update files and evaluation results | `data/updates/`, `data/benchmark/w3/<run_id>/` |
 
 ## Week 2 notes
@@ -102,6 +120,10 @@ Defaults are `local[4]`, a 4 GiB JVM heap and 128 shuffle partitions. Add `--hel
 
 Each experiment pairs one baseline query with one optimized variant, warms both once, then measures them three times in alternating order with `collect()`. A speedup is reported only when the optimized result equals the baseline; where neither variant is the canonical query, both must also match the canonical result. Cache experiments measure the baseline before the cache is built, because Spark substitutes a cached plan into any matching query. `results.json` records medians, every raw sample, plan facts (partition filters, join strategy, in-memory scans, final adaptive plans), cache build time and memory, and product storage; `plans/` holds `EXPLAIN FORMATTED` plus the executed plan of each variant. Product-backed rewrites in `src/dic_pipeline/sql/products/` are valid for the full coverage range only.
 
+## Week 3 notes
+
+On the full data (evaluation run of 2026-09-26, details in the [evaluation report](docs/w3_evaluation_report.md)), applying the three update files takes 134 s, against 313 s to ingest and integrate the original data from scratch. It inserts 668,820 new trips and skips 143,319 copies of existing ones. Refreshing the four products takes 66 s as a full rebuild and 87 s in `auto` mode, with identical contents: at this scale, finding the changed hours costs as much as rebuilding these small products, and `auto` saves work only when the integrated table has not changed. Validation adds 47 s (27%) to a full ingestion, almost all of it in Taxi. Monitoring costs about 6 s per row written, 13% of ingestion but 60% of a product refresh. The update adds 7.9% to the stored bytes, in line with 7% more trips, but turns the Weather and Air Quality tables from one file into 90 small ones.
+
 ## Tests
 
 ```powershell
@@ -109,9 +131,9 @@ $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Tests use real Spark and Delta with small fixtures and temporary tables, so no raw data is needed and a full run takes minutes. They cover invalid timestamps, NaN and infinity, integer bounds, duplicate selection, day and DST boundaries, missing environment values, join row preservation, Delta read-back, the six analytical queries, product/query equivalence and the experiment harness. `zoneinfo` needs `tzdata` on Windows, pinned in `requirements.txt`.
+Tests use real Spark and Delta with small fixtures and temporary tables, so no raw data is needed; a full run takes about 50 minutes on Windows, most of it in the incremental and evaluation suites. They cover invalid timestamps, NaN and infinity, integer bounds, duplicate selection, day and DST boundaries, missing environment values, join row preservation, Delta read-back, the six analytical queries, product/query equivalence and the experiment harness. `zoneinfo` needs `tzdata` on Windows, pinned in `requirements.txt`.
 
-The suite grew with the project: 27 tests after Week 1 (2026-09-09), 55 after the Week 2 review and experiment harness (2026-09-19), and 84 after the Week 3 incremental, monitoring and validation work (2026-09-25). Full-data runs are separate from the fixture suite; Week 1 preserved 9,554,576 unique integrated trips, and the Week 2 experiments ran against that same snapshot.
+The suite grew with the project: 27 tests after Week 1 (2026-09-09), 55 after the Week 2 review and experiment harness (2026-09-19), and 86 after the Week 3 incremental, validation, monitoring and evaluation work (2026-09-27). Full-data runs are separate from the fixture suite; Week 1 preserved 9,554,576 unique integrated trips, and the Week 2 experiments and Week 3 evaluation ran against that same data.
 
 ## Reports and source code
 
@@ -128,9 +150,8 @@ Week 2:
 
 Week 3:
 
-- [Incremental update and analytical consistency](docs/w3_role_a_incremental.md).
-- [Validation, schema evolution and analytical consistency](docs/w3_role_b_validation.md).
-- [Cross-role monitoring, incremental and validation interfaces](docs/w3_interfaces.md).
+- [Design report](docs/w3_design_report.md) and [evaluation report](docs/w3_evaluation_report.md).
+- Role notes: [incremental updates and refresh](docs/w3_role_a_incremental.md), [validation and schema evolution](docs/w3_role_b_validation.md), and the [interfaces between the roles](docs/w3_interfaces.md).
 
 Shared:
 

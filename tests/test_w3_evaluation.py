@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import tests.test_incremental as incremental_fixtures
 import tests.test_integration as integration_fixtures
+from dic_pipeline.data_products import refresh_data_products
 from dic_pipeline.ingestion import create_spark, write_delta
 from dic_pipeline.integration import build_integrated_table
 from dic_pipeline.monitoring import PIPELINE_RUNS
@@ -12,6 +14,8 @@ from dic_pipeline.w3_evaluation import (
     Measurement,
     Variant,
     build_measurements,
+    prepare_updates,
+    product_signature,
     run_measurement,
     storage_report,
 )
@@ -92,20 +96,52 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(mismatch["status"], "mismatch")
             self.assertNotIn("median_seconds", mismatch["variants"]["a"])
 
-    def test_delivered_entry_points_are_ready_for_role_c_wiring(self):
-        measurements = {m.name: m for m in build_measurements()}
-        self.assertIsNone(measurements["incremental_update"].pending)
-        self.assertIsNone(measurements["validation_overhead"].pending)
+    def test_update_measurements_wait_for_prepared_updates(self):
+        pending = {m.name for m in build_measurements() if m.pending}
+        self.assertEqual(pending, {"incremental_update", "analytical_refresh"})
+        self.assertFalse([m.name for m in build_measurements(updates=[]) if m.pending])
+        measurement = next(m for m in build_measurements() if m.name == "incremental_update")
         with tempfile.TemporaryDirectory() as directory:
-            incremental = self._run(
-                measurements["incremental_update"], Path(directory) / "incremental"
-            )
-            validation = self._run(
-                measurements["validation_overhead"], Path(directory) / "validation"
-            )
-        for result in (incremental, validation):
-            self.assertEqual((result["status"], result["runs"]), ("pending", []))
-            self.assertIn("role C", result["requires"])
+            result = self._run(measurement, Path(directory))
+        self.assertEqual((result["status"], result["runs"]), ("pending", []))
+        self.assertIn("update files", result["requires"])
+
+    def test_update_measurements_run_and_refresh_modes_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            incremental_fixtures.IncrementalTests._seed_platform(self, root)
+            baseline = root / "delta"
+            refresh_data_products(self.spark, delta_root=baseline, mode="full", monitoring=False)
+            manifests, updated = prepare_updates(self.spark, baseline, root / "eval", "setup")
+            measurements = {m.name: m for m in build_measurements(updates=manifests)}
+            for name in ("incremental_update", "analytical_refresh"):
+                result = run_measurement(
+                    self.spark, measurements[name], baseline_root=baseline, updated_root=updated,
+                    workspace_root=root / "workspace" / name, run_prefix="test", repeats=1,
+                )
+                # analytical_refresh: auto must reproduce the full rebuild's product contents.
+                self.assertEqual(result["status"], "success", result.get("mismatch"))
+            modes = {r["variant"]: {s["mode"] for s in r["stages"]} for r in result["runs"]}
+            self.assertEqual(modes["full"], {"full"})
+            self.assertIn("incremental", modes["auto"])
+
+    def test_product_signature_ignores_metadata_and_float_noise(self):
+        schema = ("trip_count long, distance_sum double, "
+                  "source_delta_version long, schema_version string")
+        rows = {
+            "a": [(1, 0.1 + 0.2, 0, "1.0.0")],
+            "b": [(1, 0.3, 5, "1.1.0")],
+            "c": [(2, 0.3, 0, "1.0.0")],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            signatures = {}
+            for name, values in rows.items():
+                root = Path(directory) / name
+                write_delta(self.spark.createDataFrame(values, schema),
+                            root / "analytics" / "product", num_files=1)
+                signatures[name] = product_signature(self.spark, root)
+        self.assertEqual(signatures["a"], signatures["b"])
+        self.assertNotEqual(signatures["a"], signatures["c"])
 
     def test_storage_report_separates_snapshot_and_disk(self):
         report = storage_report(self.spark, self.baseline)
