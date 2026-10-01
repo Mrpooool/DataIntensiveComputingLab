@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-09-28。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；当前进入 W4。本次完成需求梳理和计划更新，尚未实现 ML。题目、分工和新增模块名均为建议。
+更新：2026-10-01。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；W4 已确认同学 B 负责可复用特征工程及模型生命周期。B 的接口、代码、CLI 和小样本测试已实现；A 的训练集及 C 的路线对照仍待接入和全量运行。
 
 ## W1–W3 完成摘要
 
@@ -39,23 +39,23 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ### Phase 2：可复用特征工程（Task 2）
 
-**Status:** pending
+**Status:** Role B implementation complete; dataset integration pending
 
-- [ ] 时间特征（小时、星期、月份）、位置特征（Zone/borough）；类别编码、缺失处理、按需缩放，组装 `features` 向量。
-- [ ] 历史需求只用 h 以前计数；先补齐小时，再算 lag/滚动窗口。验证和测试模拟逐小时预测，明确历史真实计数何时可用。
-- [ ] 环境候选：历史 `weather_temp`、`weather_prcp`、`weather_coco`、`air_quality_pm25`；按小时唯一化，不能按行程数加权。注明观测发布延迟的离线假设，不用目标小时事后实测值。
-- [ ] 保留环境缺失标记；填充值、编码器、缩放器仅在 train 拟合，validation/test 只 transform。删除运行元数据和预测时未知的行程字段。
-- [ ] 普通函数与配置组合 Spark Pipeline，允许调整特征列表，不另搭通用框架。
+- [x] 时间周期特征（纽约小时/星期/月）、Zone/borough 类别编码、缺失处理、缩放和 `features` 组装已在 `ml_pipeline.py` 实现。
+- [ ] A/C 生成训练集时，历史需求只用 h 以前计数；先补齐小时，再算 lag/滚动窗口。B 已把三个 lag 字段和预测时语义写进强制接口。
+- [ ] A/C 生成训练集时，历史环境按小时唯一化并滞后一小时。B 已排除目标小时事后实测值，并记录离线发布延迟假设。
+- [x] 环境缺失标记保留；填充值、编码器、缩放器只在 train 拟合，validation/test 只 transform；特征输出删除无关字段。
+- [x] 使用 `configs/ml.json` + 普通 Spark Pipeline，可配置特征列表，并能单独保存/复用预处理 PipelineModel。
 
 ### Phase 3：训练、评估、保存和再训练（Task 3）
 
-**Status:** pending
+**Status:** Role B implementation complete; real-data run pending
 
-- [ ] 建简单需求基线（如前一天同小时计数），再训练一个 MLlib 回归模型；候选线性回归或随机森林，选一个完成闭环即可。
-- [ ] validation 用于参数/模型选择，test 只用于最终评估。记录 MAE、RMSE、R²，对照基线；零需求样本不以 MAPE 为主要指标。
-- [ ] 保存完整预处理与模型 PipelineModel、配置、随机种子、代码/环境版本、数据快照、split 边界、指标和阶段耗时。
-- [ ] 重新加载模型，对固定样本预测并按容差核对一致；同一输入/配置可复现流程和指标。
-- [ ] 新快照通过同一入口生成训练集并训练，保存新版本模型。W3 模拟更新只演示再训练机制，单独标记，不混入真实预测效果主实验。
+- [x] 用 `demand_lag_24h` 建需求基线，并完成 MLlib Linear Regression 候选流水线。
+- [x] validation RMSE 选参数，test 只对胜出模型评估一次；记录 MAE、RMSE、R² 并对照基线，不使用 MAPE。
+- [x] 保存完整预处理+回归 PipelineModel、配置快照、输入路径、split 行数、候选参数、环境版本、指标和耗时；A 仍需提供正式 Delta 快照版本及 split 日期边界。
+- [x] 保存后重新加载模型，对按键排序的固定样本逐条按容差核对预测。
+- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；真实新快照实验仍待 A/C 数据。
 
 ### Phase 4：raw 与平台路线对照（Task 4）
 
@@ -84,20 +84,22 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 | 角色 | 建议任务 | 交接物 |
 | --- | --- | --- |
-| A：数据集与入口 | Task 1 数据集生成、Delta 落盘、split/快照；Task 3 运行和再训练入口 | 训练集 Schema、固定快照、CLI、小样本 |
-| B：特征与模型 | Task 2 特征流程；Task 3 模型、指标、保存加载 | train-only Pipeline、特征可用时间、训练接口 |
+| A：数据集与入口 | Task 1 数据集生成、Delta 落盘、split/快照；把正式快照交给共用训练入口 | 训练集 Schema、固定快照、生成 CLI、小样本 |
+| B：特征与模型 | Task 2 特征流程；Task 3 模型、指标、保存加载和重训练入口 | train-only Pipeline、特征可用时间、训练 CLI |
 | C：对照与交付 | Task 4 raw 路线、公平对照、特征组实验、最终联调及材料 | 双路线一致性、分阶段计时、evaluation report |
 
-先共同确定键、标签、split、特征可用时间和接口，再分头实现；各自维护测试。建议模块 `ml_dataset.py`、`ml_pipeline.py`、`w4_evaluation.py` 及薄 CLI，配置 `configs/ml.json`，均尚未创建。
+键、标签、split、特征可用时间和 B 的输入接口已固定在 `configs/ml.json`、`docs/data_contract.md` 与 `docs/w4_role_b_features_model.md`。B 已创建 `ml_pipeline.py` 及两个薄 CLI；A/C 应共用该下游实现，不复制特征和训练逻辑。
 
 ## 下一步与错误记录
 
-下一步：确定题目与分工，核验原始基线快照，固定一页训练集契约，再做小样本端到端。
+下一步：A 产出符合契约的正式训练 Delta（含快照版本和 split 边界），随后运行 B 的针对性 Spark 测试和真实数据训练；C 再用相同接口接 raw 路线并做公平对照。
 
 | 本次错误 | 次数 | 处理 |
 | --- | --- | --- |
 | apply_patch 拒绝同补丁对同路径 Delete/Add | 1 | 无文件被该补丁改写；归档后改为直接写入文档 |
 | JSON 管道带 BOM，首次解析失败 | 1 | 用 utf-8-sig 解码后解析，未改动文件内容 |
 | PowerShell 管道默认编码把新写入中文转为问号 | 1 | 改用 ASCII 转义 JSON 传递并以 UTF-8 写入；重新核验中文和归档正文 |
+| 当前 macOS 无 Java Runtime，Spark 针对性测试无法启动 | 1 | 语法编译和配置导入通过；保留测试，需在 README 规定的 JDK 21 环境运行 |
+| 本地 `.venv` 的 Python 3.11.9 符号链接失效 | 1 | 未改用户环境；用可用 Python 完成静态检查，正式验证前按 setup 脚本重建环境 |
 
 W3 错误保留在归档；后续特别注意宿主时区、Spark 惰性计算重复执行及模拟更新的评估边界。

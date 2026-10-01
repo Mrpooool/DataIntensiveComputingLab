@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0.0",
+  "prediction_task": "zone_hourly_taxi_demand",
+  "analysis_timezone": "America/New_York",
+  "key_columns": ["pickup_location_id", "target_hour_utc"],
+  "timestamp_column": "target_hour_utc",
+  "label_column": "trip_count",
+  "split_column": "split",
+  "split_values": {
+    "train": "train",
+    "validation": "validation",
+    "test": "test"
+  },
+  "categorical_features": [
+    "pickup_zone",
+    "pickup_borough",
+    "weather_coco_lag_1h"
+  ],
+  "numeric_features": [
+    "demand_lag_1h",
+    "demand_lag_24h",
+    "demand_rolling_mean_24h",
+    "weather_temp_lag_1h",
+    "weather_prcp_lag_1h",
+    "air_quality_pm25_lag_1h"
+  ],
+  "missing_indicator_features": [
+    "weather_temp_lag_1h",
+    "weather_prcp_lag_1h",
+    "air_quality_pm25_lag_1h"
+  ],
+  "baseline_prediction_column": "demand_lag_24h",
+  "imputer_strategy": "median",
+  "scale_numeric": true,
+  "model": {
+    "type": "linear_regression",
+    "reg_params": [0.0, 0.1],
+    "elastic_net_params": [0.0],
+    "max_iter": 50,
+    "tolerance": 1e-06
+  },
+  "evaluation_metrics": ["rmse", "mae", "r2"],
+  "reload_check_rows": 20
+}

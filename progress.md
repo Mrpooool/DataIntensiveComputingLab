@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-09-28：W1–W3 实现及 W3 本地材料已完成；W4 需求整理完成，实现未开始。下一步见 [task_plan.md](task_plan.md)。
+截至 2026-10-01：W1–W3 实现及 W3 本地材料已完成；W4 同学 B 的特征工程和模型生命周期代码已完成，等待 A 的正式训练集和 C 的路线对照接入。下一步见 [task_plan.md](task_plan.md)。
 
 ## W1–W2 历史摘要
 
@@ -44,6 +44,16 @@
 - 编辑中 apply_patch 拒绝同路径 Delete/Add；随后发现 PowerShell 管道中文编码问题，改用 ASCII 转义 JSON 传输和 UTF-8 写入，重新检查全文与归档。
 - 本次只整理规划文档；核验文档差异、相对链接和阶段状态，不重跑 Spark 或全量评测。
 
+## 2026-10-01：W4 同学 B 实现
+
+- 从最新 `origin/main` 的合并提交建立 `feat/w4-role-b-features-model`；开工时 W4 只有计划，没有 A/C 实现可接。
+- 固定 Zone-hour 需求预测的 B 输入接口：键、标签、三段时间 split、位置、需求 lag 和一小时滞后的环境字段；写入 `configs/ml.json` 与数据契约。
+- 新增 `ml_pipeline.py`：输入校验、纽约本地周期特征、缺失标记、train-only 中位数填补/类别编码/缩放、未知类别处理及 `features` 组装。
+- 完成前一天同小时基线和 Linear Regression 闭环：validation RMSE 选候选，test 最终评估 MAE/RMSE/R²，保存并 reload 后核对固定样本预测。
+- 新增特征物化和训练/重训练两个 CLI；每次训练保存完整 PipelineModel、配置快照、环境、输入路径、split 行数、候选指标与耗时。
+- 新增 4 个针对性 Spark 测试，覆盖接口字段、重复键拒绝、train-only 填补、缺失标记、未知类别、特征向量、指标和模型 reload。
+- Python 语法编译通过，配置可导入；当前 macOS 没有 Java Runtime 且 `.venv` 的 3.11.9 解释器链接失效，Spark 测试无法在本机启动，未将其误报为通过。
+
 ## 下次接续
 
-确定题目与分工，核验原始数据对应快照，固定键/标签/时间边界/特征契约，再做小样本数据生成 → 特征 → 训练 → 保存加载。
+A 生成符合 W4 ML 契约的正式 Delta 训练集并记录快照/时间边界；在 JDK 21 环境先跑 `tests.test_ml_pipeline`，再做真实数据特征 → 训练 → 保存加载。C 从 raw 路线生成同接口数据后再做两路对照。

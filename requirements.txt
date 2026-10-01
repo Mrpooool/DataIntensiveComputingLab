@@ -1,6 +1,7 @@
 pyspark==4.2.0
 delta-spark==4.4.0
 py4j==0.10.9.9
+numpy==2.3.5
 importlib_metadata==8.7.1
 zipp==4.1.0
 tzdata==2026.4
