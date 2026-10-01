@@ -160,6 +160,27 @@ Schema 演进需要事先登记：只有写在 `configs/datasets.json` 的 `sche
 
 第一次全量运行时 `auto` 比全量慢 54%（131 秒对 85 秒），原因是惰性求值导致产品被重复计算；物化一次后两条路径都变快。完整数据、解释与 Task 5 讨论见 [评测报告](docs/w3_evaluation_report.md)，设计与权衡见 [设计报告](docs/w3_design_report.md)，原始样本见 [w3_evaluation_timings.csv](docs/w3_evaluation_timings.csv)。
 
+## W4 同学 B：特征与模型
+
+同学 A/C 先按 [`configs/ml.json`](configs/ml.json) 和 [B 的接口说明](docs/w4_role_b_features_model.md)
+生成统一的 Zone-hour 训练集，默认放在 `data/delta/ml/training_dataset`。B 的代码只依赖这份接口：
+
+```powershell
+# 只用 train 拟合填补、编码和缩放器，再转换三个 split 并保存特征 PipelineModel
+.\.venv\Scripts\python.exe -m scripts.run_ml_features
+
+# validation 选参数，test 只评估一次；保存并重新加载完整模型核对预测
+.\.venv\Scripts\python.exe -m scripts.run_ml_training
+
+# 新快照重训练仍用同一入口，输出到新的运行目录
+.\.venv\Scripts\python.exe -m scripts.run_ml_training `
+  --training-data data/delta/ml/training_dataset_v2 --run-id snapshot-v2
+```
+
+特征表写到已忽略的 `data/`，模型、配置快照和指标写到已忽略的 `artifacts/`。训练结果包含
+RMSE、MAE、R²，以及“前一天同小时需求”基线。输入缺列、键重复、时间 split 重叠，或模型保存后
+重新加载的预测不一致时，流程会直接失败，不会悄悄继续。
+
 ## 测试与协作
 
 ```powershell
@@ -188,4 +209,5 @@ Weather 的纽约背景和 UTC 时区仍是显式假设；100% 小时匹配不�
 - W1：[设计报告](docs/w1_design_report.md) · [性能报告](docs/benchmark_report.md) · [原始耗时](docs/benchmark_timings.csv) · [架构图](docs/architecture.md)
 - W2：[benchmark report](docs/w2_benchmark_report.md) · [原始计时](docs/w2_benchmark_timings.csv) · [优化策略与权衡](docs/w2_design_optimization.md) · [B 的查询设计](docs/role_b_query_design.md)
 - W3：[设计报告](docs/w3_design_report.md) · [评测报告](docs/w3_evaluation_report.md) · [A 的增量说明](docs/w3_role_a_incremental.md) · [B 的校验说明](docs/w3_role_b_validation.md) · [角色间接口](docs/w3_interfaces.md)
+- W4：[B 的特征与模型说明](docs/w4_role_b_features_model.md) · [ML 配置](configs/ml.json) · [ML 实现](src/dic_pipeline/ml_pipeline.py) · [针对性测试](tests/test_ml_pipeline.py)
 - 共用：[执行计划](task_plan.md) · [数据目录](docs/data_catalog.md) · [数据契约](docs/data_contract.md) · [进度](progress.md)

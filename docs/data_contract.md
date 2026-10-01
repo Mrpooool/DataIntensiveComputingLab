@@ -118,3 +118,38 @@ recomputing them.
 - Zones: normalize `LocationID` to `location_id`; trim borough/zone/service-zone text. Set all three labels to `Unknown` for 264 and `Outside of NYC` for 265. Hash the location ID.
 - Classification: apply the rejection/flag rules above, rank duplicates by validity then source file/raw JSON, retain one valid representative where available. Accepted output drops raw JSON and error reasons; rejected output retains both. Optional null measurements stay null.
 - Integration: prefix weather fields, compute the two-level Air median and site/flag counts, add pickup/dropoff labels, scope and match flags. Preserve accepted Taxi rows and leave unavailable environmental values null, as specified above.
+
+## Week 4 ML training handoff v1
+
+Role B consumes one row per `(pickup_location_id, target_hour_utc)` for the zone-hour demand task.
+The timestamp is a whole UTC hour, the key is non-null and unique, and `trip_count` is a finite,
+non-negative label. Role A's integrated route and Role C's raw route must emit the same schema:
+
+```text
+pickup_location_id              integer, non-null
+target_hour_utc                 timestamp, non-null
+trip_count                      numeric, non-null
+split                           string: train | validation | test
+pickup_zone                     string, nullable
+pickup_borough                  string, nullable
+weather_coco_lag_1h             string, nullable
+demand_lag_1h                   numeric, nullable
+demand_lag_24h                  numeric, nullable
+demand_rolling_mean_24h         numeric, nullable
+weather_temp_lag_1h             numeric, nullable
+weather_prcp_lag_1h             numeric, nullable
+air_quality_pm25_lag_1h         numeric, nullable
+```
+
+Every valid zone in the fixed coverage window must have a row for every hour, including a label of
+zero when the hour is inside the verified Taxi coverage and contains no pickups. Missing or
+out-of-range source coverage is not a zero. Demand lags and rolling means are computed after that
+calendar is completed and use only hours before `target_hour_utc`. Environmental features are
+lagged by one hour under the documented offline-availability assumption; target-hour observations
+are not features.
+
+The three split values are chronological, non-overlapping blocks, and every zone for one target
+hour belongs to the same block. Preprocessing estimators (median imputation, category indexers,
+one-hot metadata and standard scaling) fit only on train. UTC identifies the hour; New York local
+time is derived only for cyclic calendar features. `configs/ml.json` is the executable column and
+feature contract, and [the Role B design note](w4_role_b_features_model.md) documents the handoff.
