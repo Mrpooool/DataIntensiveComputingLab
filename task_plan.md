@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-10-01。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；W4 已确认同学 B 负责可复用特征工程及模型生命周期。B 的接口、代码、CLI 和小样本测试已实现；A 的训练集及 C 的路线对照仍待接入和全量运行。
+更新：2026-10-01。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；W4 已确认同学 B 负责可复用特征工程及模型生命周期。B 的接口、代码、CLI 和小样本测试已实现；A 的正式训练 Delta 已生成并核验，C 的路线对照仍待接入。
 
 ## W1–W3 完成摘要
 
@@ -29,21 +29,21 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ### Phase 1：固定训练集契约（Task 1）
 
-**Status:** pending
+**Status:** Role A complete; shared W4 design and downstream integration pending
 
-- [ ] 确定题目、预测时点、标签、范围、特征及分工；形成 `docs/w4_ml_design.md`，同步 `docs/data_contract.md` 的正式新增契约。
-- [ ] 主实验固定原始 2024 年 1–3 月对应的完成快照，记录输入文件标识、Delta 路径/版本和覆盖窗口；先核验快照，不默认当前 `data/delta` 仍是原始基线。
-- [ ] 若采用小时需求：用覆盖窗口 × NYC Zone 补齐零订单小时；范围外和环境缺测不能当作零需求。UTC 定位小时，纽约当地时间提取时段/星期，保留 DST 边界。
-- [ ] 按完整小时顺序切 train/validation/test，建议约 70%/15%/15%，实际日期边界写入配置；同一小时所有 Zone 属于同一 split。
-- [ ] Spark 自动生成带键、标签、原始特征和 split 的训练集，建议存为独立 Delta 表；记录行数、缺失率、标签分布及筛选原因。
+- [x] 固定 A 的预测时点、标签、范围、特征与来源要求；见 `docs/w4_role_a_training_dataset.md`、`configs/ml.json` 和 `docs/data_contract.md`。W4 总设计由后续联调统一整理。
+- [x] 主实验固定原始 2024 年 1–3 月对应的完成快照，核对四类输入文件标识、Delta 路径/版本和覆盖窗口；拒绝 W3 模拟更新快照。
+- [x] 用覆盖窗口 × NYC Zone 补齐零订单小时；范围外和环境缺测不当作零需求。UTC 定位小时，纽约当地时间由 B 的特征流水线提取，保留 DST 边界。
+- [x] 按完整小时顺序切 train/validation/test，约 70%/15%/15%，边界写入配置；同一小时所有 Zone 属于同一 split。
+- [x] Spark 生成带键、标签、原始特征和 split 的独立 Delta 训练表；记录行数、缺失率、标签分布及筛选原因。
 
 ### Phase 2：可复用特征工程（Task 2）
 
 **Status:** Role B implementation complete; dataset integration pending
 
 - [x] 时间周期特征（纽约小时/星期/月）、Zone/borough 类别编码、缺失处理、缩放和 `features` 组装已在 `ml_pipeline.py` 实现。
-- [ ] A/C 生成训练集时，历史需求只用 h 以前计数；先补齐小时，再算 lag/滚动窗口。B 已把三个 lag 字段和预测时语义写进强制接口。
-- [ ] A/C 生成训练集时，历史环境按小时唯一化并滞后一小时。B 已排除目标小时事后实测值，并记录离线发布延迟假设。
+- [ ] A 的训练集已先补齐小时，再只用 h 以前计数计算 lag/滚动窗口；C 的 raw 路线仍需核对同一规则。
+- [ ] A 的训练集已按小时唯一化环境并滞后一小时；C 的 raw 路线仍需核对同一规则。离线发布延迟假设已记录。
 - [x] 环境缺失标记保留；填充值、编码器、缩放器只在 train 拟合，validation/test 只 transform；特征输出删除无关字段。
 - [x] 使用 `configs/ml.json` + 普通 Spark Pipeline，可配置特征列表，并能单独保存/复用预处理 PipelineModel。
 
@@ -92,7 +92,7 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ## 下一步与错误记录
 
-下一步：A 产出符合契约的正式训练 Delta（含快照版本和 split 边界），随后运行 B 的针对性 Spark 测试和真实数据训练；C 再用相同接口接 raw 路线并做公平对照。
+下一步：B 对 A 的正式训练 Delta 执行真实数据特征与训练；C 再用相同接口接 raw 路线并做公平对照。
 
 | 本次错误 | 次数 | 处理 |
 | --- | --- | --- |

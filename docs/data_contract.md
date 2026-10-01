@@ -148,6 +148,13 @@ calendar is completed and use only hours before `target_hour_utc`. Environmental
 lagged by one hour under the documented offline-availability assumption; target-hour observations
 are not features.
 
+The Role A baseline uses the completed January-March snapshot and the UTC interval
+`[2024-01-01 05:00:00, 2024-04-01 04:00:00)`. The standardized Taxi table must contain all three
+monthly source files listed in `configs/ml.json`; the Weather, Air Quality, and Zone files and
+integrated Taxi lineage must match that same pinned batch. Split boundaries are
+`2024-03-05 00:00:00` and `2024-03-18 16:00:00` UTC. The published audit metadata records the
+source paths, Delta versions, source filenames, coverage, split counts, and label checks.
+
 The three split values are chronological, non-overlapping blocks, and every zone for one target
 hour belongs to the same block. Preprocessing estimators (median imputation, category indexers,
 one-hot metadata and standard scaling) fit only on train. UTC identifies the hour; New York local

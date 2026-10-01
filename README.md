@@ -124,13 +124,18 @@ Each experiment pairs one baseline query with one optimized variant, warms both 
 
 On the full data (evaluation run of 2026-09-26, details in the [evaluation report](docs/w3_evaluation_report.md)), applying the three update files takes 134 s, against 313 s to ingest and integrate the original data from scratch. It inserts 668,820 new trips and skips 143,319 copies of existing ones. Refreshing the four products takes 66 s as a full rebuild and 87 s in `auto` mode, with identical contents: at this scale, finding the changed hours costs as much as rebuilding these small products, and `auto` saves work only when the integrated table has not changed. Validation adds 47 s (27%) to a full ingestion, almost all of it in Taxi. Monitoring costs about 6 s per row written, 13% of ingestion but 60% of a product refresh. The update adds 7.9% to the stored bytes, in line with 7% more trips, but turns the Weather and Air Quality tables from one file into 90 small ones.
 
-## Week 4 Role B
+## Week 4 training dataset and model
 
-Role A/C must first create the common zone-hour training dataset documented in
-[`configs/ml.json`](configs/ml.json) and the [ML handoff](docs/w4_role_b_features_model.md). The
-default location is `data/delta/ml/training_dataset`. Then run:
+Role A generates the common zone-hour training dataset from the original pinned
+January-March snapshot. See the [dataset design](docs/w4_role_a_training_dataset.md),
+[`configs/ml.json`](configs/ml.json), and the [ML handoff](docs/w4_role_b_features_model.md).
+The generator rejects a Week 3 synthetic update snapshot. The default output is
+`data/delta/ml/training_dataset` with audit metadata beside it. Then run:
 
 ```powershell
+# Build the training Delta table from one verified integrated snapshot.
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/delta
+
 # Fit preprocessing on train only, transform all splits and save a reusable feature PipelineModel.
 .\.venv\Scripts\python.exe -m scripts.run_ml_features
 

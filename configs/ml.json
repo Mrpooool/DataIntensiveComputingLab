@@ -1,6 +1,22 @@
 {
   "schema_version": "1.0.0",
   "prediction_task": "zone_hourly_taxi_demand",
+  "training_dataset": {
+    "coverage_start_utc": "2024-01-01 05:00:00",
+    "coverage_end_utc_exclusive": "2024-04-01 04:00:00",
+    "train_end_utc_exclusive": "2024-03-05 00:00:00",
+    "validation_end_utc_exclusive": "2024-03-18 16:00:00",
+    "expected_source_files": {
+      "taxi": [
+        "yellow_tripdata_2024-01.parquet",
+        "yellow_tripdata_2024-02.parquet",
+        "yellow_tripdata_2024-03.parquet"
+      ],
+      "weather": ["weather.csv"],
+      "air_quality": ["hourly_88101_2024.csv"],
+      "taxi_zones": ["taxi_zone_lookup.csv"]
+    }
+  },
   "analysis_timezone": "America/New_York",
   "key_columns": ["pickup_location_id", "target_hour_utc"],
   "timestamp_column": "target_hour_utc",
