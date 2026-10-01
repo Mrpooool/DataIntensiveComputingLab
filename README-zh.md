@@ -160,12 +160,17 @@ Schema 演进需要事先登记：只有写在 `configs/datasets.json` 的 `sche
 
 第一次全量运行时 `auto` 比全量慢 54%（131 秒对 85 秒），原因是惰性求值导致产品被重复计算；物化一次后两条路径都变快。完整数据、解释与 Task 5 讨论见 [评测报告](docs/w3_evaluation_report.md)，设计与权衡见 [设计报告](docs/w3_design_report.md)，原始样本见 [w3_evaluation_timings.csv](docs/w3_evaluation_timings.csv)。
 
-## W4 同学 B：特征与模型
+## W4 训练集、特征与模型
 
-同学 A/C 先按 [`configs/ml.json`](configs/ml.json) 和 [B 的接口说明](docs/w4_role_b_features_model.md)
-生成统一的 Zone-hour 训练集，默认放在 `data/delta/ml/training_dataset`。B 的代码只依赖这份接口：
+同学 A 从固定的原始 1–3 月整合快照生成 Zone-hour 训练集；接口见
+[`configs/ml.json`](configs/ml.json)、[A 的数据集说明](docs/w4_role_a_training_dataset.md) 和
+[B 的接口说明](docs/w4_role_b_features_model.md)。入口会拒绝 W3 虚拟更新快照。
+默认输出为 `data/delta/ml/training_dataset`，同目录保存来源版本和统计元数据：
 
 ```powershell
+# 从已核验的整合快照生成训练 Delta 表
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/delta
+
 # 只用 train 拟合填补、编码和缩放器，再转换三个 split 并保存特征 PipelineModel
 .\.venv\Scripts\python.exe -m scripts.run_ml_features
 
