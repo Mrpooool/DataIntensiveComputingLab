@@ -60,9 +60,12 @@ pipeline model and the Delta feature table can be generated with `scripts.run_ml
 
 ## Training, selection and evaluation
 
-`train_and_evaluate()` builds the full preprocessing plus Linear Regression pipeline for each
-configured `(regParam, elasticNetParam)` candidate. Each candidate is fitted on train and ranked by
-validation RMSE. Test is evaluated exactly once using the selected candidate. The report contains
+`train_and_evaluate()` fits the feature pipeline once on train and caches the transformed splits;
+preprocessing is deterministic, so every candidate would fit the same stages. Each configured
+`(regParam, elasticNetParam)` Linear Regression is then fitted on the train features and ranked
+by validation RMSE. Test is evaluated exactly once using the selected candidate. The selected
+model is saved as one `PipelineModel` of the fitted feature stages followed by the regression,
+and the report times the feature fit and each model fit separately. The report contains
 validation and test RMSE, MAE and R-squared together with the `demand_lag_24h` baseline. MAPE is not
 used because valid zero-demand zone-hours make it undefined or misleading.
 

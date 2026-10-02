@@ -38,7 +38,9 @@ def dataset_bounds(config: Mapping[str, Any]) -> tuple[datetime, datetime, datet
 
 def _source_file_name(value: str) -> str:
     parsed = urlparse(value)
-    return Path(unquote(parsed.path) if parsed.scheme == "file" else value).name
+    path = Path(unquote(parsed.path) if parsed.scheme == "file" else value)
+    # A Spark-written source, such as the Week 3 Taxi update, is a directory of part files.
+    return path.parent.name if path.name.startswith("part-") else path.name
 
 
 def source_file_identifiers(
@@ -106,10 +108,14 @@ def build_training_dataset(
     integrated: DataFrame,
     zones: DataFrame,
     weather: DataFrame,
-    air: DataFrame,
+    air_hours: DataFrame,
     config: Mapping[str, Any],
 ) -> DataFrame:
-    """Complete the NYC zone-hour calendar, then add past-only demand and environment."""
+    """Complete the NYC zone-hour calendar, then add past-only demand and environment.
+
+    ``air_hours`` holds one NYC PM2.5 value per UTC hour; on the platform route it is
+    ``integration.aggregate_air_quality`` of the standardized Air table.
+    """
     if spark.conf.get("spark.sql.session.timeZone") != "UTC":
         raise ValueError("Spark session timezone must be UTC.")
     start, train_end, validation_end, end = dataset_bounds(config)
@@ -155,12 +161,12 @@ def build_training_dataset(
         F.col("prcp").cast("double").alias("weather_prcp_lag_1h"),
         F.col("coco").cast("string").alias("weather_coco_lag_1h"),
     )
-    air_hours = aggregate_air_quality(air).select(
+    air_lagged = air_hours.select(
         F.expr("air_quality_hour_utc + INTERVAL 1 HOUR").alias("target_hour_utc"),
         F.col("air_quality_pm25").cast("double").alias("air_quality_pm25_lag_1h"),
     )
     result = calendar.join(F.broadcast(weather_hours), "target_hour_utc", "left").join(
-        F.broadcast(air_hours), "target_hour_utc", "left"
+        F.broadcast(air_lagged), "target_hour_utc", "left"
     )
     result = result.withColumn(
         "split",
@@ -188,7 +194,7 @@ def materialize_training_dataset(
     source_files = source_file_identifiers(frames, config)
     frame = build_training_dataset(
         spark, frames["integrated"], frames["taxi_zones"], frames["weather"],
-        frames["air_quality"], config,
+        aggregate_air_quality(frames["air_quality"]), config,
     ).cache()
     frame.count()
     split_counts = validate_training_dataset(frame, config)

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from pyspark.sql import functions as F
 
 from dic_pipeline.ingestion import create_spark
+from dic_pipeline.integration import aggregate_air_quality
 from dic_pipeline.ml_dataset import (
     build_training_dataset, materialize_training_dataset, pinned_inputs,
     source_file_identifiers,
@@ -72,7 +73,8 @@ class TrainingDatasetTests(unittest.TestCase):
 
     def test_zero_hours_past_only_features_and_chronological_splits(self):
         frame = build_training_dataset(
-            self.spark, self.integrated, self.zones, self.weather, self.air, self.config,
+            self.spark, self.integrated, self.zones, self.weather,
+            aggregate_air_quality(self.air), self.config,
         )
         self.assertEqual(frame.count(), 2 * 72)
         self.assertEqual(frame.where(F.col("pickup_location_id") == 1).count(), 0)
@@ -105,14 +107,15 @@ class TrainingDatasetTests(unittest.TestCase):
 
     def test_modified_target_hour_does_not_change_earlier_features(self):
         original = build_training_dataset(
-            self.spark, self.integrated, self.zones, self.weather, self.air, self.config,
+            self.spark, self.integrated, self.zones, self.weather,
+            aggregate_air_quality(self.air), self.config,
         )
         changed = build_training_dataset(
             self.spark, self.integrated.unionByName(
                 self.integrated.where(F.col("pickup_hour_utc") == F.lit(utc(2024, 3, 9, 0)))
                 .where(F.col("pickup_location_id") == 161)
             ),
-            self.zones, self.weather, self.air, self.config,
+            self.zones, self.weather, aggregate_air_quality(self.air), self.config,
         )
         key = (F.col("pickup_location_id") == 161) & (
             F.col("target_hour_utc") == F.lit(utc(2024, 3, 9, 0))
@@ -152,7 +155,9 @@ class TrainingDatasetTests(unittest.TestCase):
 
     def test_missing_original_source_file_is_rejected(self):
         frames = {
-            "taxi": self.integrated.withColumn("source_file", F.lit("raw/taxi.parquet")),
+            "taxi": self.integrated.withColumn("source_file", F.lit(
+                "file:///raw/taxi.parquet/part-00000-abc.snappy.parquet"
+            )),
             "integrated": self.integrated.withColumn("source_file", F.lit("raw/taxi.parquet")),
             "weather": self.weather.withColumn("source_file", F.lit("raw/weather.csv")),
             "air_quality": self.air.withColumn("source_file", F.lit("raw/air.csv")),

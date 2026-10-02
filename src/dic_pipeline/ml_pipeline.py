@@ -489,12 +489,12 @@ def _candidate_grid(config: Mapping[str, Any]) -> list[dict[str, float]]:
     ]
 
 
-def build_training_pipeline(
+def build_regression(
     config: Mapping[str, Any], *, reg_param: float, elastic_net_param: float
-) -> Pipeline:
-    """Build the complete preprocessing + regression Pipeline for one candidate."""
+) -> LinearRegression:
+    """Build the Linear Regression estimator for one candidate; it reads ``features``."""
     model_config = config["model"]
-    estimator = LinearRegression(
+    return LinearRegression(
         featuresCol=FEATURES_COLUMN,
         labelCol=str(config["label_column"]),
         predictionCol=PREDICTION_COLUMN,
@@ -504,7 +504,6 @@ def build_training_pipeline(
         tol=float(model_config["tolerance"]),
         standardization=False,
     )
-    return Pipeline(stages=[*feature_stages(config), estimator])
 
 
 def _verify_reload(
@@ -539,56 +538,77 @@ def train_and_evaluate(
     *,
     model_path: str | Path | None = None,
 ) -> TrainingResult:
-    """Select on validation, evaluate test once, and optionally save/reload the model."""
+    """Fit preprocessing once on train, select the regression on validation, test once.
+
+    The saved model is one PipelineModel: the fitted feature stages followed by the
+    selected regression, so a reload predicts from the raw training-dataset columns.
+    """
     total_started = perf_counter()
     counts = validate_training_dataset(frame, config)
     split_column = str(config["split_column"])
     split_values = _split_names(config)
-    train = frame.where(F.col(split_column) == split_values["train"]).cache()
-    validation = frame.where(F.col(split_column) == split_values["validation"]).cache()
-    test = frame.where(F.col(split_column) == split_values["test"]).cache()
-    train.count(), validation.count(), test.count()
-
-    candidates = []
-    best: tuple[float, int, PipelineModel, dict[str, float]] | None = None
-    test_predictions: DataFrame | None = None
+    feature_started = perf_counter()
+    feature_model = build_feature_pipeline(config).fit(
+        frame.where(F.col(split_column) == split_values["train"])
+    )
+    kept = dict.fromkeys(
+        [str(config["label_column"]), str(config["baseline_prediction_column"]), FEATURES_COLUMN]
+    )
+    featured = {
+        name: feature_model.transform(frame.where(F.col(split_column) == value))
+        .select(*kept)
+        .cache()
+        for name, value in split_values.items()
+    }
     try:
+        for part in featured.values():
+            part.count()
+        feature_seconds = perf_counter() - feature_started
+
+        candidates = []
+        best: tuple[float, int, Any, dict[str, float]] | None = None
         for index, params in enumerate(_candidate_grid(config)):
             started = perf_counter()
-            model = build_training_pipeline(config, **params).fit(train)
-            validation_metrics = _metric_values(model.transform(validation), config)
-            candidate = {
+            regression = build_regression(config, **params).fit(featured["train"])
+            fit_seconds = perf_counter() - started
+            validation_metrics = _metric_values(
+                regression.transform(featured["validation"]), config
+            )
+            candidates.append({
                 "candidate_index": index,
                 **params,
-                "fit_and_validation_seconds": perf_counter() - started,
+                "model_fit_seconds": fit_seconds,
+                "validation_seconds": perf_counter() - started - fit_seconds,
                 "validation_metrics": validation_metrics,
-            }
-            candidates.append(candidate)
+            })
             rank = (validation_metrics["rmse"], index)
             if best is None or rank < (best[0], best[1]):
-                best = (rank[0], rank[1], model, params)
+                best = (rank[0], rank[1], regression, params)
         if best is None:
             raise RuntimeError("No ML candidate was fitted.")
-        _rmse, selected_index, selected_model, selected_params = best
+        _rmse, selected_index, regression, selected_params = best
+        selected_model = PipelineModel(stages=[*feature_model.stages, regression])
         test_started = perf_counter()
-        test_predictions = selected_model.transform(test).cache()
-        test_predictions.count()
-        test_metrics = _metric_values(test_predictions, config)
+        test_metrics = _metric_values(regression.transform(featured["test"]), config)
         test_seconds = perf_counter() - test_started
-        validation_baseline = _baseline_metrics(validation, config)
-        test_baseline = _baseline_metrics(test, config)
+        validation_baseline = _baseline_metrics(featured["validation"], config)
+        test_baseline = _baseline_metrics(featured["test"], config)
 
         reload_check = None
         if model_path is not None:
             selected_model.write().overwrite().save(str(model_path))
             reload_check = _verify_reload(
-                selected_model, model_path, test, config
+                selected_model,
+                model_path,
+                frame.where(F.col(split_column) == split_values["test"]),
+                config,
             )
         report = {
             "status": "success",
             "prediction_task": config["prediction_task"],
             "schema_version": config["schema_version"],
             "split_counts": counts,
+            "feature_fit_seconds": feature_seconds,
             "candidate_count": len(candidates),
             "candidates": candidates,
             "selected_candidate_index": selected_index,
@@ -607,11 +627,8 @@ def train_and_evaluate(
         }
         return TrainingResult(model=selected_model, report=report)
     finally:
-        if test_predictions is not None:
-            test_predictions.unpersist()
-        train.unpersist()
-        validation.unpersist()
-        test.unpersist()
+        for part in featured.values():
+            part.unpersist()
 
 
 def load_training_dataset(
