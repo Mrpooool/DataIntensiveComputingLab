@@ -160,32 +160,41 @@ Schema 演进需要事先登记：只有写在 `configs/datasets.json` 的 `sche
 
 第一次全量运行时 `auto` 比全量慢 54%（131 秒对 85 秒），原因是惰性求值导致产品被重复计算；物化一次后两条路径都变快。完整数据、解释与 Task 5 讨论见 [评测报告](docs/w3_evaluation_report.md)，设计与权衡见 [设计报告](docs/w3_design_report.md)，原始样本见 [w3_evaluation_timings.csv](docs/w3_evaluation_timings.csv)。
 
-## W4 训练集、特征与模型
+## 运行 W4
 
-同学 A 从固定的原始 1–3 月整合快照生成 Zone-hour 训练集；接口见
-[`configs/ml.json`](configs/ml.json)、[A 的数据集说明](docs/w4_role_a_training_dataset.md) 和
-[B 的接口说明](docs/w4_role_b_features_model.md)。入口会拒绝 W3 虚拟更新快照。
-默认输出为 `data/delta/ml/training_dataset`，同目录保存来源版本和统计元数据：
+W4 在每个 UTC 小时开始时预测纽约 262 个 Zone 在该小时的上车数。训练集、特征和训练流程见[设计报告](docs/w4_design_report.md)，可执行契约是 [`configs/ml.json`](configs/ml.json)。
 
 ```powershell
-# 从已核验的整合快照生成训练 Delta 表
-.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/delta
+# Task 1：从钉定的 1–3 月快照生成 Zone-hour 训练 Delta 表
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset
 
-# 只用 train 拟合填补、编码和缩放器，再转换三个 split 并保存特征 PipelineModel
+# Task 2（可单独运行）：只用 train 拟合预处理，写出特征表
 .\.venv\Scripts\python.exe -m scripts.run_ml_features
 
-# validation 选参数，test 只评估一次；保存并重新加载完整模型核对预测
-.\.venv\Scripts\python.exe -m scripts.run_ml_training
+# Task 3：validation 选参数，test 只评估一次；保存并重新加载模型核对预测
+.\.venv\Scripts\python.exe -m scripts.run_ml_training --run-id main
 
-# 新训练集重训练仍用同一入口，输出到新的运行目录
-.\.venv\Scripts\python.exe -m scripts.run_ml_training `
-  --training-metadata data/delta/ml/training_dataset_v2_metadata.json --run-id snapshot-v2
+# Task 4：原始文件路线与平台路线对照（预热 + 3 次），以及特征组实验
+.\.venv\Scripts\python.exe -m scripts.run_w4_evaluation
 ```
 
-特征表写到已忽略的 `data/`，模型、配置快照和指标写到已忽略的 `artifacts/`。训练结果包含
-RMSE、MAE、R²，以及“前一天同小时需求”基线。特征和训练读取训练集元数据里登记的 Delta 版本，
-不读最新版本，并把该版本和来源 run ID 写进输出。输入缺列、键重复、时间 split 重叠，或模型保存后
-重新加载的预测不一致时，流程会直接失败，不会悄悄继续。
+训练集写到 `data/delta/ml/training_dataset`，旁边的 `training_dataset_metadata.json` 记录来源快照、Delta 版本、文件、覆盖窗口和 split 边界。特征和训练按元数据登记的版本读取训练集，不读最新版本，并把版本写进输出。每次训练把模型、指标和配置快照写到 `artifacts/w4/training/<run-id>`，评测结果写到 `data/benchmark/w4/<run-id>`。
+
+新数据到来时：先发布新快照（例如 W3 增量更新），给训练集一份写明新覆盖窗口、split 边界和源文件的配置，再用同样两条命令、新的 run ID 重训。用 W3 更新后的快照：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/benchmark/w3/operated `
+  --config configs/ml_w3_update.json --output-path data/delta/ml/training_dataset_w3_update `
+  --metadata-path data/delta/ml/training_dataset_w3_update_metadata.json
+.\.venv\Scripts\python.exe -m scripts.run_ml_training --config configs/ml_w3_update.json `
+  --training-metadata data/delta/ml/training_dataset_w3_update_metadata.json --run-id retrain-w3-update
+```
+
+该快照的 Taxi 是模拟数据，重训指标只用来演示机制，不代表预测效果。
+
+## W4 评测结果
+
+全量评测（2026-10-02，详见[评测报告](docs/w4_evaluation_report.md)）：选中模型 test RMSE 13.35、MAE 4.88、R² 0.941，前一天同小时基线为 20.48、5.52、0.862。原始文件路线与平台路线生成的训练集逐行一致；准备训练集从原始文件要 43.0 秒，从平台只要 8.6 秒，训练两边都是约 12 秒；准备代码 97 行对 8 行。平台一次性摄入和整合（313 秒）由所有下游共用。天气和 PM2.5 对这个粒度的线性模型没有提升，收益全部来自 Taxi 历史需求和 Zone。原始计时见 [w4_evaluation_timings.csv](docs/w4_evaluation_timings.csv)。
 
 ## 测试与协作
 
@@ -215,5 +224,5 @@ Weather 的纽约背景和 UTC 时区仍是显式假设；100% 小时匹配不�
 - W1：[设计报告](docs/w1_design_report.md) · [性能报告](docs/benchmark_report.md) · [原始耗时](docs/benchmark_timings.csv) · [架构图](docs/architecture.md)
 - W2：[benchmark report](docs/w2_benchmark_report.md) · [原始计时](docs/w2_benchmark_timings.csv) · [优化策略与权衡](docs/w2_design_optimization.md) · [B 的查询设计](docs/role_b_query_design.md)
 - W3：[设计报告](docs/w3_design_report.md) · [评测报告](docs/w3_evaluation_report.md) · [A 的增量说明](docs/w3_role_a_incremental.md) · [B 的校验说明](docs/w3_role_b_validation.md) · [角色间接口](docs/w3_interfaces.md)
-- W4：[A 的训练集说明](docs/w4_role_a_training_dataset.md) · [B 的特征与模型说明](docs/w4_role_b_features_model.md) · [ML 配置](configs/ml.json) · [ML 实现](src/dic_pipeline/ml_pipeline.py) · [针对性测试](tests/test_ml_dataset.py)（[流水线](tests/test_ml_pipeline.py)）
+- W4：[设计报告](docs/w4_design_report.md) · [评测报告](docs/w4_evaluation_report.md) · [原始计时](docs/w4_evaluation_timings.csv) · [A 的训练集说明](docs/w4_role_a_training_dataset.md) · [B 的特征与模型说明](docs/w4_role_b_features_model.md) · [ML 配置](configs/ml.json) · [ML 实现](src/dic_pipeline/ml_pipeline.py) · [针对性测试](tests/test_ml_dataset.py)（[流水线](tests/test_ml_pipeline.py)）
 - 共用：[执行计划](task_plan.md) · [数据目录](docs/data_catalog.md) · [数据契约](docs/data_contract.md) · [进度](progress.md)

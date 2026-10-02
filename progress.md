@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-10-02：W1–W3 已完成并合入 main；W4 中 A 的训练集、B 的特征与模型已合入，C 已修复两处接入问题并完成首次真实数据训练，路线对照待做。下一步见 [task_plan.md](task_plan.md)。
+截至 2026-10-03：W1–W3 已完成并合入 main；W4 四个 Task 的代码、全量实验和两份报告已在 `c/w4-fixes` 完成，待全量测试、队友审阅、提交包和 PR。下一步见 [task_plan.md](task_plan.md)。
 
 ## W1–W2 历史摘要
 
@@ -56,7 +56,7 @@
 
 ## 下次接续
 
-真实数据特征与训练已跑通（见 2026-10-02 记录）。下一步由 C 从 raw 路线生成同接口数据，再做两路对照和分阶段计时。
+队友审阅 [设计报告](docs/w4_design_report.md) 和 [评测报告](docs/w4_evaluation_report.md)；之后生成提交包，推送 `c/w4-fixes` 并开一个 PR。
 
 ## 2026-10-01：W4 同学 A 训练集
 
@@ -71,3 +71,15 @@
 - 修复：原始批次的 manifest 没有 `coverage_window`（只有 incremental apply 写入），`run_ml_dataset` 在按 README 新跑的快照上必然失败；改用 `load_calendar_coverage`，与 Q3–Q5 的覆盖窗口口径一致。测试改用不带窗口的真实 manifest 形态。
 - 修复：特征和训练 CLI 改为读取 A 元数据（`--training-metadata`），按其 `output_version` 加载训练集，不读最新版本；`metrics.json` 记录训练集路径、版本和来源 run ID。删除未使用的 parquet 输入。新增回归断言：重写训练表后仍读到元数据登记的版本。
 - 本地真实数据按 README 跑通三条命令：训练集 571,946 行、split 401,122 / 85,936 / 84,888、零订单 335,531，与 A 的记录一致；特征向量 299 维。Linear Regression 选中 reg=0.0，test RMSE 13.35、MAE 4.88、R² 0.941；`demand_lag_24h` 基线 20.48 / 5.52 / 0.862；重载核对 20 行一致。耗时：数据集 71 秒、特征 62 秒、训练 78 秒（含 Spark 启动）。运行 `w4-check-20261002`，输出在已忽略的 `data/delta/ml/` 与 `artifacts/w4/`。
+
+## 2026-10-03：W4 同学 C 的 Task 4、重训演示与报告
+
+- 新增 `ml_raw_route.py`（Approach A）：从六个原始文件自行把 Taxi 纽约时间转 UTC、套用平台的 Taxi 拒绝规则和去重、筛选纽约 Air 站点并做两级中位数，再调用共用 builder。builder 改为接收逐小时 PM2.5，平台路线在调用前聚合。
+- B 的 `train_and_evaluate` 改为在 train 上只拟合一次特征流水线，每个候选只拟合回归；保存的仍是完整 PipelineModel，真实数据指标与改前完全相同（test RMSE 13.3459）。
+- 新增 `w4_evaluation.py` 与 `scripts.run_w4_evaluation`：两路预热后逐行对比，之后每次运行须复现同一哈希和 test 指标；特征组按列名前缀累加。夹具测试用平台真实的摄入和整合对照 raw 路线，覆盖每种 Taxi 拒绝情况、重复行、非纽约 Air 站点和夏令时。
+- 全量运行 `20261002T155150Z`：两路 571,946 行 0 差异。中位数：准备 8.6 秒（平台）对 43.0 秒（原始文件）；特征拟合 6.2 / 6.0 秒，模型拟合均 1.3 秒，训练合计 12.7 / 12.2 秒。准备代码 8 行对 97 行；平台一次性摄入+整合 312.7 秒（W3 实测）。
+- 特征组 test RMSE：仅 Taxi 13.349、+Weather 13.347、+Air 13.346；validation 上仅 Taxi 最好，环境特征对线性模型无提升。
+- 36 条被平台拒绝的行程（35 条下车早于上车、1 条重复）位于纽约 Zone 且在窗口内；raw 路线若不复刻这些规则，标签会不同。
+- 重训演示：W3 更新快照 + `configs/ml_w3_update.json`，同样两条命令生成 1,144,154 行并训练 `retrain-w3-update`。Taxi 更新是 Spark 目录，源文件校验改为按目录名识别 part 文件。合成数据只演示机制。
+- 主训练 `main-20261003`：test RMSE 13.35、MAE 4.88、R² 0.941，基线 20.48 / 5.52 / 0.862，重载核对 20 行一致。
+- 交付：[设计报告](docs/w4_design_report.md)、[评测报告](docs/w4_evaluation_report.md)、[计时样本](docs/w4_evaluation_timings.csv)，README 中英文与 CLAUDE.md 命令已更新。受影响的 3 个测试套件 12 项通过。

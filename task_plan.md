@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-10-02。依据：[Assignment.md](Assignment.md)。W1–W3 已完成并合入 main。W4 中 A 的训练集、B 的特征与模型均已合入；C 审查后修复了快照覆盖窗口与训练集版本钉定，并完成首次真实数据训练。C 的路线对照仍待实现。
+更新：2026-10-03。依据：[Assignment.md](Assignment.md)。W1–W3 已完成并合入 main。W4 四个 Task 的代码、全量实验、设计报告和评测报告已在 `c/w4-fixes` 完成；待全量测试、队友审阅、提交包和 PR。
 
 ## W1–W3 完成摘要
 
@@ -29,7 +29,7 @@ W3 最终代码已通过 PR #11、#12 合入 main；课程系统提交状态未�
 
 ### Phase 1：固定训练集契约（Task 1）
 
-**Status:** Role A complete; downstream integration verified; shared W4 design report pending
+**Status:** complete（设计报告 `docs/w4_design_report.md`）
 
 - [x] 固定 A 的预测时点、标签、范围、特征与来源要求；见 `docs/w4_role_a_training_dataset.md`、`configs/ml.json` 和 `docs/data_contract.md`。W4 总设计由后续联调统一整理。
 - [x] 主实验固定原始 2024 年 1–3 月对应的完成快照，核对四类输入文件标识、Delta 路径/版本和覆盖窗口；拒绝 W3 模拟更新快照。
@@ -39,45 +39,45 @@ W3 最终代码已通过 PR #11、#12 合入 main；课程系统提交状态未�
 
 ### Phase 2：可复用特征工程（Task 2）
 
-**Status:** complete on the integrated route; C raw route pending
+**Status:** complete
 
 - [x] 时间周期特征（纽约小时/星期/月）、Zone/borough 类别编码、缺失处理、缩放和 `features` 组装已在 `ml_pipeline.py` 实现。
-- [ ] A 的训练集已先补齐小时，再只用 h 以前计数计算 lag/滚动窗口；C 的 raw 路线仍需核对同一规则。
-- [ ] A 的训练集已按小时唯一化环境并滞后一小时；C 的 raw 路线仍需核对同一规则。离线发布延迟假设已记录。
+- [x] 先补齐小时，再只用 h 以前计数计算 lag/滚动窗口；raw 路线共用同一 builder，全量逐行一致。
+- [x] 环境按小时唯一化并滞后一小时；raw 路线自行做 PM2.5 两级中位数，结果一致。离线发布延迟假设已记录。
 - [x] 环境缺失标记保留；填充值、编码器、缩放器只在 train 拟合，validation/test 只 transform；特征输出删除无关字段。
 - [x] 使用 `configs/ml.json` + 普通 Spark Pipeline，可配置特征列表，并能单独保存/复用预处理 PipelineModel。
 
 ### Phase 3：训练、评估、保存和再训练（Task 3）
 
-**Status:** implementation complete; first real-data run done by C on 2026-10-02
+**Status:** complete（主训练 `main-20261003`，重训演示 `retrain-w3-update`）
 
 - [x] 用 `demand_lag_24h` 建需求基线，并完成 MLlib Linear Regression 候选流水线。
 - [x] validation RMSE 选参数，test 只对胜出模型评估一次；记录 MAE、RMSE、R² 并对照基线，不使用 MAPE。
 - [x] 保存完整预处理+回归 PipelineModel、配置快照、训练集路径/Delta 版本/来源 run ID、split 行数、候选参数、环境版本、指标和耗时；特征和训练按 A 元数据登记的 `output_version` 读取训练集。
 - [x] 保存后重新加载模型，对按键排序的固定样本逐条按容差核对预测。
-- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；新快照重训练实验仍待 C 演示。
+- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；已在 W3 更新快照上用 `configs/ml_w3_update.json` 演示（`retrain-w3-update`，仅演示机制）。
 
 ### Phase 4：raw 与平台路线对照（Task 4）
 
-**Status:** pending
+**Status:** complete（全量运行 `20261002T155150Z`）
 
 这里的 Approach A/B 是作业路线名称，与成员 A/B 无关。
 
-- [ ] Approach A：从四份原始文件加载、清洗、校验、整合，再做特征工程；不能读取已有整合表。准备步骤在代码和计时中明确呈现，口径与平台一致。
-- [ ] Approach B：从固定版本 integrated Delta 读取，再做相同特征工程；说明平台已承担的摄入/校验/整合工作。
-- [ ] 两路采用相同原始范围、标签、特征、split、模型参数和环境；共用后续特征/训练逻辑，先核对样本键、标签和特征内容，再比较耗时。
-- [ ] 分别测准备、特征处理、模型训练和总耗时；执行 Spark action，区分预处理拟合与模型拟合，记录预热/缓存规则和重复样本，不预设平台让训练本身更快。
-- [ ] 比较实现复杂度、预处理复杂度、训练时间、可复现性，用具体代码及保存产物佐证。
-- [ ] 建议做特征组对照（时间/位置基础、加历史需求、加环境）支撑数据贡献讨论；这是建议实验，不是作业硬性模型数量要求。
+- [x] Approach A：`ml_raw_route.py` 从六个原始文件自行转换时区、套用平台的 Taxi 拒绝规则和去重、筛选纽约 Air 站点并做两级中位数；不读平台任何表。
+- [x] Approach B：`platform_training_dataset` 读钉定快照；平台已承担的摄入/校验/整合写入评测报告。
+- [x] 两路共用 builder、B 的流水线和同一配置；预热后先逐行对比（0 行差异），之后每次运行须复现同一哈希和 test 指标。
+- [x] 分阶段计时：准备、特征拟合、模型拟合、训练合计、端到端；预热 1 次 + 交替 3 次取中位数；训练本身两路相同。
+- [x] 实现复杂度（97 行对 8 行）、预处理复杂度、训练时间、可复现性写入评测报告。
+- [x] 特征组对照：仅 Taxi、+Weather、+Air；环境特征对线性模型无提升。
 
 ### Phase 5：验证与交付
 
-**Status:** pending
+**Status:** in progress
 
-- [ ] 针对性测试：零订单、小时键/DST、split 不交叉、历史窗口不读未来、train-only 拟合、未知类别/缺测、两路样本一致、保存加载和再训练。
+- [x] 针对性测试：零订单、小时键/DST、split 不交叉、历史窗口不读未来、train-only 拟合、未知类别/缺测、两路样本一致、保存加载和再训练。
 - [ ] 跑受影响测试；若改共享平台模块，跑全部测试。在独立输出目录完成真实数据端到端及路线对照，保存环境、快照、参数和原始样本。
-- [ ] 完整源码/配置/测试、3–5 页设计报告、简短 evaluation report、README；说明训练集生成、特征处理、训练评估、对照复现及新数据再训练，同步中文说明。
-- [ ] 回答各 Task 讨论题：特征与假设、预处理负担、复用和扩展、多任务支持、新数据集接入、前三周工程决定及未来改进。
+- [x] 完整源码/配置/测试、3–5 页设计报告、简短 evaluation report、README；说明训练集生成、特征处理、训练评估、对照复现及新数据再训练，同步中文说明。
+- [x] 回答各 Task 讨论题：特征与假设、预处理负担、复用和扩展、多任务支持、新数据集接入、前三周工程决定及未来改进。
 - [ ] `git diff --check`、按 README 复现、核对提交包；模型和生成数据放已忽略的 `data/` 或 `artifacts/`。
 
 ## 建议三人分工与交接
@@ -92,7 +92,7 @@ W3 最终代码已通过 PR #11、#12 合入 main；课程系统提交状态未�
 
 ## 下一步与错误记录
 
-下一步：C 从四份原始文件实现 raw 路线，复用 `build_training_dataset` 及 B 的流水线，先核对两路样本、标签和特征一致，再分阶段计时（准备、特征拟合、模型拟合分开测）。
+下一步：全量测试通过后由队友审阅两份报告；再生成提交包（报告 PDF + 源码），推送 `c/w4-fixes` 并开一个 PR。
 
 | 本次错误 | 次数 | 处理 |
 | --- | --- | --- |
