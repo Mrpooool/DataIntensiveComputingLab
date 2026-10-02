@@ -21,12 +21,11 @@ from src.dic_pipeline.ml_pipeline import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--training-data",
+        "--training-metadata",
         type=Path,
-        default=DEFAULT_DELTA_ROOT / "ml" / "training_dataset",
-        help="Role A training dataset in Delta or Parquet format.",
+        default=DEFAULT_DELTA_ROOT / "ml" / "training_dataset_metadata.json",
+        help="Metadata written by scripts.run_ml_dataset; names the Delta version to read.",
     )
-    parser.add_argument("--input-format", choices=("delta", "parquet"), default="delta")
     parser.add_argument("--config", type=Path, default=DEFAULT_ML_CONFIG)
     parser.add_argument(
         "--output-path",
@@ -58,9 +57,7 @@ def main() -> None:
     started = perf_counter()
     featured = None
     try:
-        source = load_training_dataset(
-            spark, args.training_data, input_format=args.input_format
-        )
+        source, training_data = load_training_dataset(spark, args.training_metadata)
         fit_started = perf_counter()
         model, split_counts = fit_feature_pipeline(source, config)
         fit_seconds = perf_counter() - fit_started
@@ -76,8 +73,7 @@ def main() -> None:
             "status": "success",
             "prediction_task": config["prediction_task"],
             "schema_version": config["schema_version"],
-            "training_data": str(args.training_data),
-            "input_format": args.input_format,
+            "training_data": training_data,
             "output_path": str(args.output_path),
             "model_path": str(args.model_path),
             "row_count": row_count,

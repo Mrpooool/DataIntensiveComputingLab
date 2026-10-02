@@ -153,7 +153,9 @@ The Role A baseline uses the completed January-March snapshot and the UTC interv
 monthly source files listed in `configs/ml.json`; the Weather, Air Quality, and Zone files and
 integrated Taxi lineage must match that same pinned batch. Split boundaries are
 `2024-03-05 00:00:00` and `2024-03-18 16:00:00` UTC. The published audit metadata records the
-source paths, Delta versions, source filenames, coverage, split counts, and label checks.
+source paths, Delta versions, source filenames, coverage, split counts, and label checks. It is
+also the handoff to Role B: feature and training runs load the training table at the
+`output_version` it names and record that version with their outputs.
 
 The three split values are chronological, non-overlapping blocks, and every zone for one target
 hour belongs to the same block. Preprocessing estimators (median imputation, category indexers,

@@ -68,14 +68,15 @@ used because valid zero-demand zone-hours make it undefined or misleading.
 
 The selected full `PipelineModel` is saved, loaded again, and asked to predict a deterministic
 ordered sample. The run fails if the reloaded predictions differ outside a strict numerical
-tolerance. `metrics.json` also records candidate parameters, split counts, timings, the input path
-and the local Python/Spark/Delta/Java environment; `config_snapshot.json` freezes the run settings.
+tolerance. `metrics.json` also records candidate parameters, split counts, timings, the training
+table path, its Delta version and source run ID, and the local Python/Spark/Delta/Java environment; `config_snapshot.json` freezes the run settings.
 MLlib Linear Regression has no stochastic sampling or seed parameter, so reproducibility rests on
 the fixed snapshot, chronological splits, configuration and deterministic estimator rather than a
 decorative unused seed.
 
 Retraining is the same operation, not a separate code path: build a new compatible training
-snapshot, then run `scripts.run_ml_training` with a new `--run-id`. Every run has its own model,
+snapshot with its own metadata, then run `scripts.run_ml_training` with that
+`--training-metadata` and a new `--run-id`. Every run has its own model,
 configuration and metrics directory under the ignored `artifacts/` root. A W3 simulated update must
 be labelled as a retraining-mechanism demonstration rather than mixed into the main prediction
 quality result.
@@ -102,11 +103,11 @@ from bypassing the validation and leakage decisions established in Weeks 1–3.
 ```powershell
 # Optional standalone materialization of Task 2 output.
 .\.venv\Scripts\python.exe -m scripts.run_ml_features `
-  --training-data data/delta/ml/training_dataset
+  --training-metadata data/delta/ml/training_dataset_metadata.json
 
-# Task 3; rerun with another input snapshot/run ID to retrain.
+# Task 3; rerun with another dataset's metadata and run ID to retrain.
 .\.venv\Scripts\python.exe -m scripts.run_ml_training `
-  --training-data data/delta/ml/training_dataset
+  --training-metadata data/delta/ml/training_dataset_metadata.json
 ```
 
 Role A still owns construction, snapshot/version metadata, zero-hour completion, chronological split

@@ -15,7 +15,9 @@ from dic_pipeline.ml_dataset import (
     build_training_dataset, materialize_training_dataset, pinned_inputs,
     source_file_identifiers,
 )
-from dic_pipeline.ml_pipeline import load_ml_config, validate_training_dataset
+from dic_pipeline.ml_pipeline import (
+    load_ml_config, load_training_dataset, validate_training_dataset,
+)
 
 
 def utc(year, month, day, hour):
@@ -143,6 +145,7 @@ class TrainingDatasetTests(unittest.TestCase):
         snapshot["completed_batch"]["coverage_window"]["valid_pickup_end_utc_exclusive"] = (
             "2024-03-13 00:00:00"
         )
+        snapshot["coverage_window"] = snapshot["completed_batch"]["coverage_window"]
         with patch("dic_pipeline.ml_dataset.integration_snapshot", return_value=snapshot):
             with self.assertRaisesRegex(ValueError, "Snapshot coverage"):
                 pinned_inputs(self.spark, "unused", self.config)
@@ -179,18 +182,21 @@ class TrainingDatasetTests(unittest.TestCase):
             versions = {name: 0 for name in ("taxi", "taxi_zones", "weather", "air_quality")}
             manifest = root / "metadata"
             manifest.mkdir()
+            # An original batch, as run_ingestion writes it, carries no coverage window.
+            (manifest / "completed_batch.json").write_text(json.dumps({
+                "run_id": "baseline", "versions": versions,
+            }), encoding="utf-8")
+            (manifest / "completed_integration.json").write_text(json.dumps({
+                "run_id": "baseline", "standardized_versions": versions,
+                "integrated_version": 0,
+            }), encoding="utf-8")
             window = {
                 "valid_pickup_start_utc": "2024-03-09 00:00:00",
                 "valid_pickup_end_utc_exclusive": "2024-03-12 00:00:00",
             }
-            (manifest / "completed_batch.json").write_text(json.dumps({
-                "run_id": "baseline", "versions": versions, "coverage_window": window,
-            }), encoding="utf-8")
-            (manifest / "completed_integration.json").write_text(json.dumps({
-                "run_id": "baseline", "standardized_versions": versions,
-                "integrated_version": 0, "coverage_window": window,
-            }), encoding="utf-8")
-            report = materialize_training_dataset(self.spark, self.config, delta_root=root)
+            with patch("dic_pipeline.queries.load_dataset_config", return_value=window):
+                report = materialize_training_dataset(self.spark, self.config, delta_root=root)
+            self.assertEqual(report["coverage_window"], window)
             self.assertEqual(report["row_count"], 144)
             self.assertEqual(report["source_versions"]["integrated"], 0)
             self.assertEqual(report["source_files"]["taxi"], ["taxi.parquet"])
@@ -199,7 +205,17 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertEqual(report["included_nyc_trip_count"], 3)
             self.assertEqual(report["label_distribution"]["total"], 3)
             self.assertEqual(self.spark.read.format("delta").load(report["output_path"]).count(), 144)
-            self.assertTrue((root / "ml/training_dataset_metadata.json").exists())
+
+            # A later rewrite of the table does not change what the metadata hands to training.
+            self.spark.range(1).write.format("delta").mode("overwrite").option(
+                "overwriteSchema", "true"
+            ).save(report["output_path"])
+            frame, training_data = load_training_dataset(
+                self.spark, root / "ml/training_dataset_metadata.json"
+            )
+            self.assertEqual(training_data["version"], 0)
+            self.assertEqual(training_data["source_run_id"], "baseline")
+            self.assertEqual(frame.count(), 144)
 
 
 if __name__ == "__main__":

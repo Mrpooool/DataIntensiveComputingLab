@@ -14,7 +14,8 @@ The main experiment uses the original 2024 January-March coverage
 are fixed in `configs/ml.json`. The builder requires the published integration
 snapshot and completed batch to have the same run and table versions. It reads
 those Delta versions, not the latest unregistered tables. It also checks the
-published Taxi coverage and the expected Jan/Feb/Mar Taxi, Weather, Air, and Zone
+snapshot's Taxi coverage (the window an incremental update published, otherwise the
+configured validity window in `configs/datasets.json`) and the expected Jan/Feb/Mar Taxi, Weather, Air, and Zone
 source filenames; a Week 3 simulated update therefore cannot silently
 enter the main experiment. The original source file identifiers and all
 source Delta paths/versions are recorded in `training_dataset_metadata.json`.
@@ -63,11 +64,14 @@ Then run:
 ```
 
 The dataset defaults to `data/delta/ml/training_dataset` and its audit JSON to
-`data/delta/ml/training_dataset_metadata.json`. Use `--output-path` and
+`data/delta/ml/training_dataset_metadata.json`. That JSON is the handoff: the
+feature and training CLIs load the `output_version` it names, not the latest
+table version. Use `--output-path` and
 `--metadata-path` for an isolated experiment; `--overwrite` explicitly replaces
 an existing output. To demonstrate retraining on a later verified snapshot,
 copy the ML configuration with that snapshot's coverage and new chronological
-split boundaries, use a distinct output path, and pass it to B's training CLI.
+split boundaries, use distinct output and metadata paths, and pass that metadata
+to B's training CLI with `--training-metadata`.
 Do not mix the synthetic update with the main prediction-quality result.
 
 Role C's raw-data route should reuse `build_training_dataset` after reproducing

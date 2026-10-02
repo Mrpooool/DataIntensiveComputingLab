@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-10-01：W1–W3 实现及 W3 本地材料已完成；W4 同学 B 的特征工程和模型生命周期代码已完成，等待 A 的正式训练集和 C 的路线对照接入。下一步见 [task_plan.md](task_plan.md)。
+截至 2026-10-02：W1–W3 已完成并合入 main；W4 中 A 的训练集、B 的特征与模型已合入，C 已修复两处接入问题并完成首次真实数据训练，路线对照待做。下一步见 [task_plan.md](task_plan.md)。
 
 ## W1–W2 历史摘要
 
@@ -32,7 +32,7 @@
 
 原始基线 `data/benchmark/w3/baseline`。曾在其副本按 README 跑 generate → apply → auto → 重复 apply → auto → Q3 → 运维报告，Q3 覆盖至 7 月 1 日；这不是 W4 预测效果验收。
 
-交付：[设计报告](docs/w3_design_report.md)、[评测报告](docs/w3_evaluation_report.md)、[计时样本](docs/w3_evaluation_timings.csv)、[提交包](submissions/Week3_submission_2026-09-27.zip)。本次核实本地 HEAD `4cdfd3c`，分支 `c/w3-fixes`；未核验远端或课程提交状态。
+交付：[设计报告](docs/w3_design_report.md)、[评测报告](docs/w3_evaluation_report.md)、[计时样本](docs/w3_evaluation_timings.csv)、[提交包](submissions/Week3_submission_2026-09-27.zip)。W3 代码已通过 PR #11、#12 合入 main；课程系统提交状态未核验。
 
 ## 2026-09-28：W4 需求与计划更新
 
@@ -56,7 +56,7 @@
 
 ## 下次接续
 
-A 的正式训练 Delta 已生成。下一步由 B 做真实数据特征、训练、保存加载；C 从 raw 路线生成同接口数据后再做两路对照。
+真实数据特征与训练已跑通（见 2026-10-02 记录）。下一步由 C 从 raw 路线生成同接口数据，再做两路对照和分阶段计时。
 
 ## 2026-10-01：W4 同学 A 训练集
 
@@ -64,3 +64,10 @@ A 的正式训练 Delta 已生成。下一步由 B 做真实数据特征、训�
 - 覆盖窗口为 `[2024-01-01 05:00:00, 2024-04-01 04:00:00)` UTC，262 个 NYC Zone × 2,183 个完整小时，共 571,946 行，其中 335,531 行零订单。训练/验证/测试分别为 401,122 / 85,936 / 84,888 行。
 - 输入整合行程 9,554,576 条，其中 37,569 条非 NYC 范围；标签总数 9,517,007 与纳入的 NYC 行程数一致。Delta 输出版本 1，已回读核验；未运行 B/C 的真实数据训练或路线对照。
 - A 的完整针对性 Spark 测试 5/5 通过；B 接口测试 4/4 通过。`git diff --check` 通过。Windows Spark 退出时报告临时 JAR 清理失败，生成与测试命令退出码均为 0。
+
+## 2026-10-02：W4 同学 C 审查与修复
+
+- 审查 PR #13、#14（分支 `c/w4-fixes`）。W4 两套测试 9/9 通过，B 的测试首次在 Windows + JDK 21 下运行；本地 `.venv` 按 `requirements.txt` 补装 `numpy==2.3.5`。
+- 修复：原始批次的 manifest 没有 `coverage_window`（只有 incremental apply 写入），`run_ml_dataset` 在按 README 新跑的快照上必然失败；改用 `load_calendar_coverage`，与 Q3–Q5 的覆盖窗口口径一致。测试改用不带窗口的真实 manifest 形态。
+- 修复：特征和训练 CLI 改为读取 A 元数据（`--training-metadata`），按其 `output_version` 加载训练集，不读最新版本；`metrics.json` 记录训练集路径、版本和来源 run ID。删除未使用的 parquet 输入。新增回归断言：重写训练表后仍读到元数据登记的版本。
+- 本地真实数据按 README 跑通三条命令：训练集 571,946 行、split 401,122 / 85,936 / 84,888、零订单 335,531，与 A 的记录一致；特征向量 299 维。Linear Regression 选中 reg=0.0，test RMSE 13.35、MAE 4.88、R² 0.941；`demand_lag_24h` 基线 20.48 / 5.52 / 0.862；重载核对 20 行一致。耗时：数据集 71 秒、特征 62 秒、训练 78 秒（含 Spark 启动）。运行 `w4-check-20261002`，输出在已忽略的 `data/delta/ml/` 与 `artifacts/w4/`。

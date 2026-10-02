@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-10-01。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；W4 已确认同学 B 负责可复用特征工程及模型生命周期。B 的接口、代码、CLI 和小样本测试已实现；A 的正式训练 Delta 已生成并核验，C 的路线对照仍待接入。
+更新：2026-10-02。依据：[Assignment.md](Assignment.md)。W1–W3 已完成并合入 main。W4 中 A 的训练集、B 的特征与模型均已合入；C 审查后修复了快照覆盖窗口与训练集版本钉定，并完成首次真实数据训练。C 的路线对照仍待实现。
 
 ## W1–W3 完成摘要
 
@@ -12,7 +12,7 @@
 
 W3 最终实测：增量更新 134.4 秒；full/auto 刷新 66.3/87.2 秒且内容一致；快照存储 +7.9%；校验开销 +26.7%；监控摄入/整合/刷新开销 +12.6%/+13.8%/+59.8%。以上为历史单机结果，本次未重跑。
 
-W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不据此声称最终修复已合入 main、推送或在课程系统提交。旧记录保留于[计划归档](docs/planning_archive_2026-09-28/task_plan.md)、[发现归档](docs/planning_archive_2026-09-28/findings.md)、[进度归档](docs/planning_archive_2026-09-28/progress.md)。
+W3 最终代码已通过 PR #11、#12 合入 main；课程系统提交状态未核验。旧记录保留于[计划归档](docs/planning_archive_2026-09-28/task_plan.md)、[发现归档](docs/planning_archive_2026-09-28/findings.md)、[进度归档](docs/planning_archive_2026-09-28/progress.md)。
 
 ## W4 目标与建议题目
 
@@ -29,7 +29,7 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ### Phase 1：固定训练集契约（Task 1）
 
-**Status:** Role A complete; shared W4 design and downstream integration pending
+**Status:** Role A complete; downstream integration verified; shared W4 design report pending
 
 - [x] 固定 A 的预测时点、标签、范围、特征与来源要求；见 `docs/w4_role_a_training_dataset.md`、`configs/ml.json` 和 `docs/data_contract.md`。W4 总设计由后续联调统一整理。
 - [x] 主实验固定原始 2024 年 1–3 月对应的完成快照，核对四类输入文件标识、Delta 路径/版本和覆盖窗口；拒绝 W3 模拟更新快照。
@@ -39,7 +39,7 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ### Phase 2：可复用特征工程（Task 2）
 
-**Status:** Role B implementation complete; dataset integration pending
+**Status:** complete on the integrated route; C raw route pending
 
 - [x] 时间周期特征（纽约小时/星期/月）、Zone/borough 类别编码、缺失处理、缩放和 `features` 组装已在 `ml_pipeline.py` 实现。
 - [ ] A 的训练集已先补齐小时，再只用 h 以前计数计算 lag/滚动窗口；C 的 raw 路线仍需核对同一规则。
@@ -49,13 +49,13 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ### Phase 3：训练、评估、保存和再训练（Task 3）
 
-**Status:** Role B implementation complete; real-data run pending
+**Status:** implementation complete; first real-data run done by C on 2026-10-02
 
 - [x] 用 `demand_lag_24h` 建需求基线，并完成 MLlib Linear Regression 候选流水线。
 - [x] validation RMSE 选参数，test 只对胜出模型评估一次；记录 MAE、RMSE、R² 并对照基线，不使用 MAPE。
-- [x] 保存完整预处理+回归 PipelineModel、配置快照、输入路径、split 行数、候选参数、环境版本、指标和耗时；A 仍需提供正式 Delta 快照版本及 split 日期边界。
+- [x] 保存完整预处理+回归 PipelineModel、配置快照、训练集路径/Delta 版本/来源 run ID、split 行数、候选参数、环境版本、指标和耗时；特征和训练按 A 元数据登记的 `output_version` 读取训练集。
 - [x] 保存后重新加载模型，对按键排序的固定样本逐条按容差核对预测。
-- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；真实新快照实验仍待 A/C 数据。
+- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；新快照重训练实验仍待 C 演示。
 
 ### Phase 4：raw 与平台路线对照（Task 4）
 
@@ -92,7 +92,7 @@ W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不�
 
 ## 下一步与错误记录
 
-下一步：B 对 A 的正式训练 Delta 执行真实数据特征与训练；C 再用相同接口接 raw 路线并做公平对照。
+下一步：C 从四份原始文件实现 raw 路线，复用 `build_training_dataset` 及 B 的流水线，先核对两路样本、标签和特征一致，再分阶段计时（准备、特征拟合、模型拟合分开测）。
 
 | 本次错误 | 次数 | 处理 |
 | --- | --- | --- |

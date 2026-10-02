@@ -177,13 +177,14 @@ Schema 演进需要事先登记：只有写在 `configs/datasets.json` 的 `sche
 # validation 选参数，test 只评估一次；保存并重新加载完整模型核对预测
 .\.venv\Scripts\python.exe -m scripts.run_ml_training
 
-# 新快照重训练仍用同一入口，输出到新的运行目录
+# 新训练集重训练仍用同一入口，输出到新的运行目录
 .\.venv\Scripts\python.exe -m scripts.run_ml_training `
-  --training-data data/delta/ml/training_dataset_v2 --run-id snapshot-v2
+  --training-metadata data/delta/ml/training_dataset_v2_metadata.json --run-id snapshot-v2
 ```
 
 特征表写到已忽略的 `data/`，模型、配置快照和指标写到已忽略的 `artifacts/`。训练结果包含
-RMSE、MAE、R²，以及“前一天同小时需求”基线。输入缺列、键重复、时间 split 重叠，或模型保存后
+RMSE、MAE、R²，以及“前一天同小时需求”基线。特征和训练读取训练集元数据里登记的 Delta 版本，
+不读最新版本，并把该版本和来源 run ID 写进输出。输入缺列、键重复、时间 split 重叠，或模型保存后
 重新加载的预测不一致时，流程会直接失败，不会悄悄继续。
 
 ## 测试与协作
@@ -214,5 +215,5 @@ Weather 的纽约背景和 UTC 时区仍是显式假设；100% 小时匹配不�
 - W1：[设计报告](docs/w1_design_report.md) · [性能报告](docs/benchmark_report.md) · [原始耗时](docs/benchmark_timings.csv) · [架构图](docs/architecture.md)
 - W2：[benchmark report](docs/w2_benchmark_report.md) · [原始计时](docs/w2_benchmark_timings.csv) · [优化策略与权衡](docs/w2_design_optimization.md) · [B 的查询设计](docs/role_b_query_design.md)
 - W3：[设计报告](docs/w3_design_report.md) · [评测报告](docs/w3_evaluation_report.md) · [A 的增量说明](docs/w3_role_a_incremental.md) · [B 的校验说明](docs/w3_role_b_validation.md) · [角色间接口](docs/w3_interfaces.md)
-- W4：[B 的特征与模型说明](docs/w4_role_b_features_model.md) · [ML 配置](configs/ml.json) · [ML 实现](src/dic_pipeline/ml_pipeline.py) · [针对性测试](tests/test_ml_pipeline.py)
+- W4：[A 的训练集说明](docs/w4_role_a_training_dataset.md) · [B 的特征与模型说明](docs/w4_role_b_features_model.md) · [ML 配置](configs/ml.json) · [ML 实现](src/dic_pipeline/ml_pipeline.py) · [针对性测试](tests/test_ml_dataset.py)（[流水线](tests/test_ml_pipeline.py)）
 - 共用：[执行计划](task_plan.md) · [数据目录](docs/data_catalog.md) · [数据契约](docs/data_contract.md) · [进度](progress.md)

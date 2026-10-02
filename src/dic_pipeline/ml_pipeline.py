@@ -615,15 +615,19 @@ def train_and_evaluate(
 
 
 def load_training_dataset(
-    spark: SparkSession,
-    path: str | Path,
-    *,
-    input_format: str = "delta",
-) -> DataFrame:
-    """Load role A/C training output without silently inferring CSV types."""
-    if input_format not in {"delta", "parquet"}:
-        raise ValueError("input_format must be delta or parquet.")
-    return spark.read.format(input_format).load(str(path))
+    spark: SparkSession, metadata_path: str | Path
+) -> tuple[DataFrame, dict[str, Any]]:
+    """Load the training Delta version that the dataset metadata names, never the latest."""
+    metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+    frame = spark.read.format("delta").option(
+        "versionAsOf", int(metadata["output_version"])
+    ).load(str(metadata["output_path"]))
+    return frame, {
+        "metadata_path": str(metadata_path),
+        "path": str(metadata["output_path"]),
+        "version": int(metadata["output_version"]),
+        "source_run_id": metadata["source_run_id"],
+    }
 
 
 def write_json(path: str | Path, value: Mapping[str, Any]) -> None:

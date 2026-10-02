@@ -142,14 +142,16 @@ The generator rejects a Week 3 synthetic update snapshot. The default output is
 # Select Linear Regression settings on validation, evaluate test once, save and reload the model.
 .\.venv\Scripts\python.exe -m scripts.run_ml_training
 
-# Retraining uses the same command with a new compatible snapshot and run identifier.
+# Retraining uses the same command with a new compatible dataset and run identifier.
 .\.venv\Scripts\python.exe -m scripts.run_ml_training `
-  --training-data data/delta/ml/training_dataset_v2 --run-id snapshot-v2
+  --training-metadata data/delta/ml/training_dataset_v2_metadata.json --run-id snapshot-v2
 ```
 
 Generated feature tables stay under ignored `data/`; models, configuration snapshots and metrics
 stay under ignored `artifacts/`. The training command reports RMSE, MAE and R-squared for both the
-selected model and the previous-day same-hour demand baseline. It fails fast on a malformed input
+selected model and the previous-day same-hour demand baseline. Training and feature runs read
+the Delta version named in the dataset metadata, not the latest one, and record that version and
+the source run ID with their outputs. They fail fast on a malformed input
 contract, overlapping chronological splits, or inconsistent predictions after model reload.
 
 ## Tests
@@ -183,9 +185,10 @@ Week 3:
 
 Week 4:
 
-- [Role B feature and model design](docs/w4_role_b_features_model.md), executable contract
+- [Role A training dataset](docs/w4_role_a_training_dataset.md),
+  [Role B feature and model design](docs/w4_role_b_features_model.md), executable contract
   [configs/ml.json](configs/ml.json), [ML pipeline](src/dic_pipeline/ml_pipeline.py) and focused
-  [tests](tests/test_ml_pipeline.py).
+  [tests](tests/test_ml_dataset.py) ([pipeline](tests/test_ml_pipeline.py)).
 
 Shared:
 

@@ -1,6 +1,6 @@
 # 项目发现与决策依据
 
-更新：2026-10-01。依据为本地代码、[Assignment.md](Assignment.md) 和最终报告。早期调查、中间状态及错误证据见[归档](docs/planning_archive_2026-09-28/findings.md)。
+更新：2026-10-02。依据为本地代码、[Assignment.md](Assignment.md) 和最终报告。早期调查、中间状态及错误证据见[归档](docs/planning_archive_2026-09-28/findings.md)。
 
 ## W4 作业要求
 
@@ -31,9 +31,17 @@
 6. 两条准备路线先证明样本一致再比耗时。平台复用减少哪些准备步骤可以从实现说明，训练时间变化必须实测。
 7. 主实验用原始 1–3 月对应快照。W3 Taxi 更新由旧样本平移 13 周生成，可能跨 split 重复原特征，不能视作独立未来数据；只单独演示再训练流程。
 
-B 已将以上约束固化为 `configs/ml.json`、严格输入校验和 train-only Spark Pipeline。线性回归本身没有随机采样或 seed 参数，因此运行记录明确依赖固定数据快照、配置和确定性 estimator，而不是虚构一个不起作用的随机种子。正式效果数值、快照版本和时间 split 边界要等 A 的训练集后才能填写。
+B 已将以上约束固化为 `configs/ml.json`、严格输入校验和 train-only Spark Pipeline。线性回归本身没有随机采样或 seed 参数，因此运行记录明确依赖固定数据快照、配置和确定性 estimator，而不是虚构一个不起作用的随机种子。A 的元数据登记训练表版本，特征和训练按该版本读取并记录。
 
-本机静态检查发现当前 macOS 没有 Java Runtime，且仓库 `.venv/bin/python` 指向已失效的 3.11.9 路径；这不属于源码修复范围。新增 Spark 测试已保留，必须在仓库规定的 Python 3.11.9 + JDK 21 环境运行后才可声称通过。
+B 当时的 macOS 环境无法运行 Spark 测试；2026-10-02 已在规定的 Windows + JDK 21 环境中通过。
+
+## W4 审查发现（C，2026-10-02）
+
+- 原始批次的 manifest 不带 `coverage_window`，只有 W3 incremental apply 才写；新阶段要用 `load_calendar_coverage` 取窗口，不能要求快照必带该字段。
+- 首次真实数据训练：test RMSE 13.35 / MAE 4.88 / R² 0.941，前一天同小时基线 20.48 / 5.52 / 0.862。MAE 只降 12%，RMSE 降 35%；RMSE 对大误差更敏感，说明模型主要减少的是大误差。
+- `pickup_zone` 名称不唯一：56/57 都是 Corona，103/104/105 都是 Governor's Island/Ellis Island/Liberty Island，作类别时会合并，影响很小，报告中说明。
+- 缺失率：`weather_prcp_lag_1h` 7.6%，其余特征不超过 1.1%（需求 lag 只在序列开头缺失）。
+- `train_and_evaluate` 的候选计时把预处理拟合、模型拟合和验证评估合在一起；Task 4 需要分阶段计时，C 要单独测。三个 ML 命令暂不写 `pipeline_runs`。
 
 ## W3 最终结论与边界
 

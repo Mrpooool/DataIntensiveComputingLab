@@ -14,6 +14,7 @@ from .data_products import integration_snapshot
 from .ingestion import DEFAULT_DELTA_ROOT
 from .integration import INTEGRATED_TABLE, NYC_BOROUGHS, aggregate_air_quality
 from .ml_pipeline import required_training_columns, validate_training_dataset, write_json
+from .queries import load_calendar_coverage
 
 
 def _utc_hour(value: str) -> datetime:
@@ -80,18 +81,15 @@ def pinned_inputs(
         raise ValueError("Integration snapshot and completed batch run IDs differ.")
     if batch.get("versions") != snapshot["standardized_versions"]:
         raise ValueError("Integration snapshot and completed batch versions differ.")
-    window = snapshot.get("coverage_window") or batch.get("coverage_window")
-    if snapshot.get("coverage_window") and batch.get("coverage_window") != window:
-        raise ValueError("Integration and batch coverage windows differ.")
+    # An original batch carries no window; the configured Taxi validity window applies.
+    coverage = load_calendar_coverage(snapshot=snapshot)
     start, _, _, end = dataset_bounds(config)
-    expected = {
-        "valid_pickup_start_utc": start.strftime("%Y-%m-%d %H:%M:%S"),
-        "valid_pickup_end_utc_exclusive": end.strftime("%Y-%m-%d %H:%M:%S"),
+    expected = (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"))
+    if coverage != expected:
+        raise ValueError(f"Snapshot coverage {coverage} differs from configured {expected}.")
+    snapshot["coverage_window"] = {
+        "valid_pickup_start_utc": coverage[0], "valid_pickup_end_utc_exclusive": coverage[1],
     }
-    if window is None:
-        raise ValueError("Completed snapshot has no verified Taxi coverage window.")
-    if window != expected:
-        raise ValueError(f"Snapshot coverage {window} differs from configured {expected}.")
     paths = {name: root / "standardized" / name for name in snapshot["standardized_versions"]}
     paths["integrated"] = root / INTEGRATED_TABLE
     versions = {**snapshot["standardized_versions"], "integrated": snapshot["integrated_version"]}
@@ -238,7 +236,7 @@ def materialize_training_dataset(
         "source_paths": snapshot["source_paths"],
         "source_versions": {**snapshot["standardized_versions"], "integrated": snapshot["integrated_version"]},
         "source_files": source_files,
-        "coverage_window": snapshot.get("coverage_window") or snapshot["completed_batch"]["coverage_window"],
+        "coverage_window": snapshot["coverage_window"],
         "split_boundaries_utc": {
             "train_start": start.isoformat(), "validation_start": train_end.isoformat(),
             "test_start": validation_end.isoformat(), "end_exclusive": end.isoformat(),
