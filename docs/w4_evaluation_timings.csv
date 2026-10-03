@@ -1,0 +1,9 @@
+route,phase,repeat,run_id,prepare,feature_fit,model_fit,training_total,end_to_end
+platform,warmup,0,20261002T155150Z-platform-warmup,34.930,10.072,3.274,19.887,54.818
+raw,warmup,0,20261002T155150Z-raw-warmup,47.181,7.652,1.571,14.660,61.840
+platform,measured,1,20261002T155150Z-platform-measured1,9.430,6.164,1.352,12.764,22.194
+raw,measured,1,20261002T155150Z-raw-measured1,41.995,5.993,1.325,12.170,54.165
+raw,measured,2,20261002T155150Z-raw-measured2,43.025,6.550,1.705,13.285,56.310
+platform,measured,2,20261002T155150Z-platform-measured2,7.974,6.053,1.181,11.919,19.893
+platform,measured,3,20261002T155150Z-platform-measured3,8.588,6.355,1.329,12.706,21.294
+raw,measured,3,20261002T155150Z-raw-measured3,43.766,5.609,1.079,11.575,55.341

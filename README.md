@@ -1,6 +1,6 @@
 # Urban data integration platform
 
-A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation. Week 4 Role B adds reusable train-only feature engineering and a save/reload/retrain Spark ML lifecycle for zone-hour demand prediction.
+A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation. Week 4 builds a zone-hour taxi demand dataset, a train-only feature pipeline and a reproducible, retrainable Spark ML training run, and compares preparing the data from the raw files with preparing it from the platform.
 
 ## Setup
 
@@ -124,33 +124,39 @@ Each experiment pairs one baseline query with one optimized variant, warms both 
 
 On the full data (evaluation run of 2026-09-26, details in the [evaluation report](docs/w3_evaluation_report.md)), applying the three update files takes 134 s, against 313 s to ingest and integrate the original data from scratch. It inserts 668,820 new trips and skips 143,319 copies of existing ones. Refreshing the four products takes 66 s as a full rebuild and 87 s in `auto` mode, with identical contents: at this scale, finding the changed hours costs as much as rebuilding these small products, and `auto` saves work only when the integrated table has not changed. Validation adds 47 s (27%) to a full ingestion, almost all of it in Taxi. Monitoring costs about 6 s per row written, 13% of ingestion but 60% of a product refresh. The update adds 7.9% to the stored bytes, in line with 7% more trips, but turns the Weather and Air Quality tables from one file into 90 small ones.
 
-## Week 4 training dataset and model
+## Week 4 machine learning pipeline
 
-Role A generates the common zone-hour training dataset from the original pinned
-January-March snapshot. See the [dataset design](docs/w4_role_a_training_dataset.md),
-[`configs/ml.json`](configs/ml.json), and the [ML handoff](docs/w4_role_b_features_model.md).
-The generator rejects a Week 3 synthetic update snapshot. The default output is
-`data/delta/ml/training_dataset` with audit metadata beside it. Then run:
+Week 4 predicts, at the start of each UTC hour, the number of Taxi pickups in each of the 262 NYC zones. The [design report](docs/w4_design_report.md) explains the dataset, features and training; [`configs/ml.json`](configs/ml.json) is the executable contract.
 
 ```powershell
-# Build the training Delta table from one verified integrated snapshot.
-.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/delta
+# Task 1: build the zone-hour training Delta table from the pinned January-March snapshot.
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset
 
-# Fit preprocessing on train only, transform all splits and save a reusable feature PipelineModel.
+# Task 2 (optional on its own): fit preprocessing on train only and write the feature table.
 .\.venv\Scripts\python.exe -m scripts.run_ml_features
 
-# Select Linear Regression settings on validation, evaluate test once, save and reload the model.
-.\.venv\Scripts\python.exe -m scripts.run_ml_training
+# Task 3: select Linear Regression settings on validation, evaluate test once, save and reload the model.
+.\.venv\Scripts\python.exe -m scripts.run_ml_training --run-id main
 
-# Retraining uses the same command with a new compatible snapshot and run identifier.
-.\.venv\Scripts\python.exe -m scripts.run_ml_training `
-  --training-data data/delta/ml/training_dataset_v2 --run-id snapshot-v2
+# Task 4: raw-file route versus platform route (warm-up + 3 repeats), and feature groups.
+.\.venv\Scripts\python.exe -m scripts.run_w4_evaluation
 ```
 
-Generated feature tables stay under ignored `data/`; models, configuration snapshots and metrics
-stay under ignored `artifacts/`. The training command reports RMSE, MAE and R-squared for both the
-selected model and the previous-day same-hour demand baseline. It fails fast on a malformed input
-contract, overlapping chronological splits, or inconsistent predictions after model reload.
+The dataset goes to `data/delta/ml/training_dataset`, with `training_dataset_metadata.json` beside it naming the source snapshot, Delta versions, files, coverage and split boundaries. Feature and training runs load the dataset at the version that metadata records, never the latest one, and record it with their outputs. Each training run writes its model, metrics and configuration snapshot to `artifacts/w4/training/<run-id>`. Evaluation results go to `data/benchmark/w4/<run-id>`.
+
+To retrain on new data, publish a new snapshot (for example with the Week 3 incremental update), give the dataset a configuration with the new coverage, split boundaries and source files, and run the same two commands under a new run ID. With the Week 3 updated snapshot:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset --delta-root data/benchmark/w3/operated `
+  --config configs/ml_w3_update.json --output-path data/delta/ml/training_dataset_w3_update `
+  --metadata-path data/delta/ml/training_dataset_w3_update_metadata.json
+.\.venv\Scripts\python.exe -m scripts.run_ml_training --config configs/ml_w3_update.json `
+  --training-metadata data/delta/ml/training_dataset_w3_update_metadata.json --run-id retrain-w3-update
+```
+
+That snapshot holds synthetic Taxi data, so the retrained metrics show the mechanism, not prediction quality.
+
+On the full data (evaluation of 2026-10-02, details in the [evaluation report](docs/w4_evaluation_report.md)), the selected model reaches test RMSE 13.35, MAE 4.88 and R² 0.941, against 20.48, 5.52 and 0.862 for the same hour on the previous day. The raw-file route and the platform route produce identical rows; preparing the dataset takes 43.0 s from the raw files and 8.6 s from the platform, training takes the same 12 s on both, and the preparation code is 97 lines against 8. The platform's one-time ingestion and integration (313 s) is shared with every other consumer. Weather and PM2.5 do not improve a linear model at this grain: all the gain comes from Taxi demand history and the zone.
 
 ## Tests
 
@@ -183,9 +189,15 @@ Week 3:
 
 Week 4:
 
-- [Role B feature and model design](docs/w4_role_b_features_model.md), executable contract
-  [configs/ml.json](configs/ml.json), [ML pipeline](src/dic_pipeline/ml_pipeline.py) and focused
-  [tests](tests/test_ml_pipeline.py).
+- [Design report](docs/w4_design_report.md), [evaluation report](docs/w4_evaluation_report.md) and
+  [timing samples](docs/w4_evaluation_timings.csv).
+- Role notes: [training dataset](docs/w4_role_a_training_dataset.md) and
+  [features and model](docs/w4_role_b_features_model.md); executable contract
+  [configs/ml.json](configs/ml.json).
+- Code: [dataset](src/dic_pipeline/ml_dataset.py), [features and training](src/dic_pipeline/ml_pipeline.py),
+  [raw-file route](src/dic_pipeline/ml_raw_route.py), [evaluation](src/dic_pipeline/w4_evaluation.py);
+  tests for the [dataset](tests/test_ml_dataset.py), [pipeline](tests/test_ml_pipeline.py) and
+  [route comparison](tests/test_w4_evaluation.py).
 
 Shared:
 

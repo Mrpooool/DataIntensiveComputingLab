@@ -22,12 +22,11 @@ from src.dic_pipeline.ml_pipeline import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--training-data",
+        "--training-metadata",
         type=Path,
-        default=DEFAULT_DELTA_ROOT / "ml" / "training_dataset",
-        help="Role A training dataset in Delta or Parquet format.",
+        default=DEFAULT_DELTA_ROOT / "ml" / "training_dataset_metadata.json",
+        help="Metadata written by scripts.run_ml_dataset; names the Delta version to train on.",
     )
-    parser.add_argument("--input-format", choices=("delta", "parquet"), default="delta")
     parser.add_argument("--config", type=Path, default=DEFAULT_ML_CONFIG)
     parser.add_argument(
         "--output-root", type=Path, default=Path("artifacts/w4/training")
@@ -56,15 +55,12 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
     try:
-        source = load_training_dataset(
-            spark, args.training_data, input_format=args.input_format
-        )
+        source, training_data = load_training_dataset(spark, args.training_metadata)
         result = train_and_evaluate(source, config, model_path=model_path)
         report = {
             **result.report,
             "run_id": run_id,
-            "training_data": str(args.training_data),
-            "input_format": args.input_format,
+            "training_data": training_data,
             "config_path": str(args.config),
             "environment": {
                 "python": platform.python_version(),

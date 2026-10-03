@@ -14,7 +14,8 @@ The main experiment uses the original 2024 January-March coverage
 are fixed in `configs/ml.json`. The builder requires the published integration
 snapshot and completed batch to have the same run and table versions. It reads
 those Delta versions, not the latest unregistered tables. It also checks the
-published Taxi coverage and the expected Jan/Feb/Mar Taxi, Weather, Air, and Zone
+snapshot's Taxi coverage (the window an incremental update published, otherwise the
+configured validity window in `configs/datasets.json`) and the expected Jan/Feb/Mar Taxi, Weather, Air, and Zone
 source filenames; a Week 3 simulated update therefore cannot silently
 enter the main experiment. The original source file identifiers and all
 source Delta paths/versions are recorded in `training_dataset_metadata.json`.
@@ -34,7 +35,8 @@ first 24 hours. B's train-only imputer handles these null values.
 
 Weather and air-quality features are joined from the pinned standardized tables,
 not inferred from trips. This preserves prior-hour observations even when a zone
-has zero trips. Air uses the existing two-stage site/hour PM2.5 median. Every
+has zero trips. The builder takes one PM2.5 value per hour; the platform route
+passes the existing two-stage site/hour median (`aggregate_air_quality`). Every
 environment column uses hour `h-1`; missing measurements remain null. These are
 offline observation-time features: actual publication delays are unavailable, so
 the experiment assumes the previous hour's data is available at the start of
@@ -63,13 +65,17 @@ Then run:
 ```
 
 The dataset defaults to `data/delta/ml/training_dataset` and its audit JSON to
-`data/delta/ml/training_dataset_metadata.json`. Use `--output-path` and
+`data/delta/ml/training_dataset_metadata.json`. That JSON is the handoff: the
+feature and training CLIs load the `output_version` it names, not the latest
+table version. Use `--output-path` and
 `--metadata-path` for an isolated experiment; `--overwrite` explicitly replaces
 an existing output. To demonstrate retraining on a later verified snapshot,
 copy the ML configuration with that snapshot's coverage and new chronological
-split boundaries, use a distinct output path, and pass it to B's training CLI.
+split boundaries, use distinct output and metadata paths, and pass that metadata
+to B's training CLI with `--training-metadata`.
 Do not mix the synthetic update with the main prediction-quality result.
 
-Role C's raw-data route should reuse `build_training_dataset` after reproducing
-the same standardized inputs, then compare keys, labels and input features with
-this pinned integrated route before timing or model fitting.
+Role C's raw-data route (`ml_raw_route.py`) reuses `build_training_dataset` after
+preparing the same inputs from the original files itself, and the Task 4
+evaluation requires both routes to produce identical rows before it compares
+times.
