@@ -1,6 +1,6 @@
 # 项目进度
 
-截至 2026-10-03：W1–W3 已完成并合入 main；W4 四个 Task 的代码、全量实验和两份报告已在 `c/w4-fixes` 完成，待全量测试、队友审阅、提交包和 PR。下一步见 [task_plan.md](task_plan.md)。
+截至 2026-10-03：W1–W3 已完成并合入 main；W4 四个 Task 的代码、全量实验、两份报告和提交包已在 `c/w4-fixes` 完成，待推送和 PR。下一步见 [task_plan.md](task_plan.md)。
 
 ## W1–W2 历史摘要
 
@@ -56,7 +56,7 @@
 
 ## 下次接续
 
-队友审阅 [设计报告](docs/w4_design_report.md) 和 [评测报告](docs/w4_evaluation_report.md)；之后生成提交包，推送 `c/w4-fixes` 并开一个 PR。
+在 GitHub 网页上为 `c/w4-fixes` 开 PR，请队友审阅 [设计报告](docs/w4_design_report.md) 和 [评测报告](docs/w4_evaluation_report.md)，合并后在课程系统提交 `submissions/Week4_submission_2026-10-03.zip`。
 
 ## 2026-10-01：W4 同学 A 训练集
 
@@ -82,4 +82,6 @@
 - 36 条被平台拒绝的行程（35 条下车早于上车、1 条重复）位于纽约 Zone 且在窗口内；raw 路线若不复刻这些规则，标签会不同。
 - 重训演示：W3 更新快照 + `configs/ml_w3_update.json`，同样两条命令生成 1,144,154 行并训练 `retrain-w3-update`。Taxi 更新是 Spark 目录，源文件校验改为按目录名识别 part 文件。合成数据只演示机制。
 - 主训练 `main-20261003`：test RMSE 13.35、MAE 4.88、R² 0.941，基线 20.48 / 5.52 / 0.862，重载核对 20 行一致。
-- 交付：[设计报告](docs/w4_design_report.md)、[评测报告](docs/w4_evaluation_report.md)、[计时样本](docs/w4_evaluation_timings.csv)，README 中英文与 CLAUDE.md 命令已更新。受影响的 3 个测试套件 12 项通过。
+- 交付：[设计报告](docs/w4_design_report.md)、[评测报告](docs/w4_evaluation_report.md)、[计时样本](docs/w4_evaluation_timings.csv)，README 中英文与 CLAUDE.md 命令已更新。两份报告按 humanizer 规则改写，PDF 各 5 页。
+- 测试：W4 三个测试文件共 12 项通过（`test_ml_dataset` 最后一次改动后 5 项再次通过）。全量测试跑了约一小时后被后台时限终止，未得到结果；W1–W3 平台模块本次未改动，按 AGENTS.md 无需全量重跑，用户决定不再重跑。
+- 提交包：`submissions/Week4_submission_2026-10-03.zip`，含源码、配置、测试、文档及两份报告 PDF。
