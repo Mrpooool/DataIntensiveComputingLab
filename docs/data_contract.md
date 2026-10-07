@@ -1,5 +1,8 @@
 # Standardization and Validation Contract v1
 
+WikiPulse Final Project uses a separate [B/C interface contract](wikipulse_bc_contract.md).
+The Taxi coursework contract below remains applicable to W1–W4.
+
 This document defines the output expected from Role B's `prepare(df, dataset_config)` function.
 It is the interface between A's reader/writer and C's integration pipeline.
 
