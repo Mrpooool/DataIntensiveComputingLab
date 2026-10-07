@@ -1,105 +1,110 @@
 # 项目执行方案
 
-更新：2026-10-01。依据：[Assignment.md](Assignment.md)。W1–W3 已完成本地实现与材料；W4 已确认同学 B 负责可复用特征工程及模型生命周期。B 的接口、代码、CLI 和小样本测试已实现；A 的正式训练 Delta 已生成并核验，C 的路线对照仍待接入。
+更新：2026-10-07。当前任务依据：[WikiPulse proposal](proposal_fixed.pdf)（1 页）。[Assignment.md](Assignment.md) 对应的 W1–W4 已完成；现在进入 **Final Project：WikiPulse**，不将其称为 W5，也不延续 Taxi 预测作为新目标。
 
-## W1–W3 完成摘要
+## 已完成基础
 
-| 周次 | 已完成 | 证据 |
-| --- | --- | --- |
-| W1 | 四源摄入、标准化、校验、Delta 存储、逐趟整合与存储实验 | 全量 9,554,576 条整合行程；[设计报告](docs/w1_design_report.md)、[数据契约](docs/data_contract.md) |
-| W2 | Q1–Q6、四张产品、缓存/裁剪/广播/AQE 对照 | 55 项历史回归、13 项实验；[评测报告](docs/w2_benchmark_report.md) |
-| W3 | 增量 MERGE、Schema 白名单、选择性刷新、拒绝隔离、监控和全量评测 | 86 项历史回归，后续物化修复相关 27 项通过；[设计报告](docs/w3_design_report.md)、[评测报告](docs/w3_evaluation_report.md) |
+W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经验；W4 已完成需求预测流水线、两路线对照和交付。最终结果见 [progress.md](progress.md)，完整历史统一保留在 [归档](docs/planning_archive/task_plan.md#archive-2026-10-07-w4-closeout)。这些经验可复用，Taxi Schema、训练模型及既有测试不能直接充当 WikiPulse 实现或验收。
 
-W3 最终实测：增量更新 134.4 秒；full/auto 刷新 66.3/87.2 秒且内容一致；快照存储 +7.9%；校验开销 +26.7%；监控摄入/整合/刷新开销 +12.6%/+13.8%/+59.8%。以上为历史单机结果，本次未重跑。
+## Proposal 已约定的范围
 
-W3 最终代码及提交包位于本地 `c/w3-fixes`（HEAD `4cdfd3c`）；不据此声称最终修复已合入 main、推送或在课程系统提交。旧记录保留于[计划归档](docs/planning_archive_2026-09-28/task_plan.md)、[发现归档](docs/planning_archive_2026-09-28/findings.md)、[进度归档](docs/planning_archive_2026-09-28/progress.md)。
+- 数据链路：Wikimedia EventStreams → Python producer → Kafka → Spark Structured Streaming；原始全流另归档至 HDFS 的 Delta/Parquet 表；Spark SQL 批处理生成历史基线；结果写 Cassandra；Grafana 展示，连接插件不顺时用 Streamlit + Plotly。
+- 部署：笔记本上的单套 Docker Compose；版本、资源上限和连接器组合待验证。
+- 原始层保留所有 Wikimedia 项目事件；分析层只取 `server_name` 以 `.wikipedia.org` 结尾、`type ∈ {edit,new}`、`namespace = 0` 的事件。
+- 详细分析关注 en/de/fr/zh/sv/ja，分语言统计覆盖所有 Wikipedia 版本。流量与 Wikipedia 占比须实测。
+- 团队：Muyang Huang、Yanjun Wang、Hao Tang；A/B/C 职责已确认（见文末），角色与姓名映射未在本轮指定。
 
-## W4 目标与建议题目
+| 输出 | Proposal 口径 |
+| --- | --- |
+| 热门条目 | 10 分钟窗口、1 分钟滑动；按 wiki/title 聚合，`edit_count * log(1 + distinct_editors)` 评分，每语言排名 |
+| 潜在编辑战 | 30 分钟内至少 3 次回退、至少 2 个非机器人用户，且回退交替出现；人工抽样评价 precision |
+| 机器人/人类活动 | 各语言编辑占比及按小时活动热力图 |
+| 异常活动 | 每语言 5 分钟编辑数/回退数，对照同语言、同日内小时的历史均值和标准差；z-score > 3 |
 
-构建可复用、可复现、可重新训练的 Spark MLlib 流程，并用同一训练集比较 raw 与 integrated 两条准备路线。重点是数据工程与工作流，不要求复杂模型或最高精度。
+回退识别为摘要关键词启发式（revert/rv/undid 及本地化词），使用 2 分钟 event-time watermark。定义上的待定点见 [findings.md](findings.md)。
 
-建议选择**各 NYC Zone 下一小时需求预测**：在小时 h 开始前预测该小时上车数量，每行是 `pickup_location_id × target_hour_utc`，标签为 `trip_count`。可复用 W2 的时间、区域及零需求口径。也可改选行程时长或车费，只做一个任务。
-
-### Phase 0：整理历史与拆解要求
+### Phase 0：需求对齐
 
 **Status:** complete
 
-- [x] 对照 W4 四个 Task 和四类交付物；归档旧记录，统一 W3 最终状态。
-- [x] 写出建议题目、分工、验收顺序及待定接口。
+- [x] 提取并目视核对 proposal 全页，记录架构、四类分析、实验和交付要求。
+- [x] 主计划切换到 WikiPulse，保留 W1–W4 完成状态；代码尚未开始。
 
-### Phase 1：固定训练集契约（Task 1）
+### Phase 1：契约与技术最小验证
 
-**Status:** Role A complete; shared W4 design and downstream integration pending
+**Status:** in_progress
 
-- [x] 固定 A 的预测时点、标签、范围、特征与来源要求；见 `docs/w4_role_a_training_dataset.md`、`configs/ml.json` 和 `docs/data_contract.md`。W4 总设计由后续联调统一整理。
-- [x] 主实验固定原始 2024 年 1–3 月对应的完成快照，核对四类输入文件标识、Delta 路径/版本和覆盖窗口；拒绝 W3 模拟更新快照。
-- [x] 用覆盖窗口 × NYC Zone 补齐零订单小时；范围外和环境缺测不当作零需求。UTC 定位小时，纽约当地时间由 B 的特征流水线提取，保留 DST 边界。
-- [x] 按完整小时顺序切 train/validation/test，约 70%/15%/15%，边界写入配置；同一小时所有 Zone 属于同一 split。
-- [x] Spark 生成带键、标签、原始特征和 split 的独立 Delta 训练表；记录行数、缺失率、标签分布及筛选原因。
+- [x] 确认 A 数据接入/集成、B 流处理、C 批处理/结果存储/展示的分工。
+- [x] 确认 [B/C 第一版逻辑接口](docs/wikipulse_bc_contract.md)：C 提供读写模块、B 调用；只展示完成窗口，基线按版本固定并通过受控重启切换。
+- [ ] 完成接口剩余类型、物理表、参数和函数签名设计，并通过小样本交接验证。
+- [ ] 确定最终项目代码目录，隔离既有课程产物；固定事件 Schema、标识/去重键、事件时间与接收时间、异常记录和来源字段。
+- [x] 固定 UTC、左闭右开窗口、整点对齐的 5 分钟窗口，以及批流复用公共解析/过滤/回退识别规则。
+- [ ] 确定编辑战 30 分钟窗口步长和“交替回退”的判定；明确机器人是否参与趋势分数，摘要关键词按词匹配及多语言范围。
+- [ ] 明确回退数与回退率的关系：proposal 算法按 5 分钟计数检测，若增加回退比例需另定分母和零值规则；明确冷启动、标准差为 0、采集中断和迟到事件的处理。
+- [ ] 验证 Docker Compose 下 Spark/Kafka/HDFS/Delta/Cassandra 的兼容版本和内存预算；验证 Cassandra 到 Grafana 的最小查询，必要时采用 proposal 允许的展示备选。
+- [ ] 用小夹具验证 distinct editor 统计、每语言 Top-N、状态窗口和 Cassandra 幂等写入的可行实现，再冻结接口。
+- [ ] 形成 WikiPulse 专属契约；新实现确定时再同步仓库规范/README，不提前把旧环境兼容性当成已验证。
 
-### Phase 2：可复用特征工程（Task 2）
-
-**Status:** Role B implementation complete; dataset integration pending
-
-- [x] 时间周期特征（纽约小时/星期/月）、Zone/borough 类别编码、缺失处理、缩放和 `features` 组装已在 `ml_pipeline.py` 实现。
-- [ ] A 的训练集已先补齐小时，再只用 h 以前计数计算 lag/滚动窗口；C 的 raw 路线仍需核对同一规则。
-- [ ] A 的训练集已按小时唯一化环境并滞后一小时；C 的 raw 路线仍需核对同一规则。离线发布延迟假设已记录。
-- [x] 环境缺失标记保留；填充值、编码器、缩放器只在 train 拟合，validation/test 只 transform；特征输出删除无关字段。
-- [x] 使用 `configs/ml.json` + 普通 Spark Pipeline，可配置特征列表，并能单独保存/复用预处理 PipelineModel。
-
-### Phase 3：训练、评估、保存和再训练（Task 3）
-
-**Status:** Role B implementation complete; real-data run pending
-
-- [x] 用 `demand_lag_24h` 建需求基线，并完成 MLlib Linear Regression 候选流水线。
-- [x] validation RMSE 选参数，test 只对胜出模型评估一次；记录 MAE、RMSE、R² 并对照基线，不使用 MAPE。
-- [x] 保存完整预处理+回归 PipelineModel、配置快照、输入路径、split 行数、候选参数、环境版本、指标和耗时；A 仍需提供正式 Delta 快照版本及 split 日期边界。
-- [x] 保存后重新加载模型，对按键排序的固定样本逐条按容差核对预测。
-- [x] `scripts.run_ml_training` 是训练与新快照重训练的同一入口，每个 run ID 保存独立产物；真实新快照实验仍待 A/C 数据。
-
-### Phase 4：raw 与平台路线对照（Task 4）
+### Phase 2：采集、归档与最小端到端（A 牵头集成）
 
 **Status:** pending
 
-这里的 Approach A/B 是作业路线名称，与成员 A/B 无关。
+- [ ] 实现 SSE producer、Kafka topic/key、连接重试与恢复策略；保留原始事件，记录采集覆盖时间、数量和可观察的缺口。
+- [ ] Kafka 原始事件落 HDFS，定义路径/分区、checkpoint 和批次元数据；为 Delta 分区裁剪实验准备明确的 Delta 表。
+- [ ] 最小验收：少量真实事件从 producer 到 Kafka、Spark、Cassandra 再到看板；坏 JSON、重复事件、重启恢复有小样本验证。
+- [ ] 尽早开始积累历史数据，测量原始流量、Wikipedia 文章编辑占比、存储增长；历史不足时不宣称异常基线可靠。
 
-- [ ] Approach A：从四份原始文件加载、清洗、校验、整合，再做特征工程；不能读取已有整合表。准备步骤在代码和计时中明确呈现，口径与平台一致。
-- [ ] Approach B：从固定版本 integrated Delta 读取，再做相同特征工程；说明平台已承担的摄入/校验/整合工作。
-- [ ] 两路采用相同原始范围、标签、特征、split、模型参数和环境；共用后续特征/训练逻辑，先核对样本键、标签和特征内容，再比较耗时。
-- [ ] 分别测准备、特征处理、模型训练和总耗时；执行 Spark action，区分预处理拟合与模型拟合，记录预热/缓存规则和重复样本，不预设平台让训练本身更快。
-- [ ] 比较实现复杂度、预处理复杂度、训练时间、可复现性，用具体代码及保存产物佐证。
-- [ ] 建议做特征组对照（时间/位置基础、加历史需求、加环境）支撑数据贡献讨论；这是建议实验，不是作业硬性模型数量要求。
-
-### Phase 5：验证与交付
+### Phase 3：四类分析与历史基线
 
 **Status:** pending
 
-- [ ] 针对性测试：零订单、小时键/DST、split 不交叉、历史窗口不读未来、train-only 拟合、未知类别/缺测、两路样本一致、保存加载和再训练。
-- [ ] 跑受影响测试；若改共享平台模块，跑全部测试。在独立输出目录完成真实数据端到端及路线对照，保存环境、快照、参数和原始样本。
-- [ ] 完整源码/配置/测试、3–5 页设计报告、简短 evaluation report、README；说明训练集生成、特征处理、训练评估、对照复现及新数据再训练，同步中文说明。
-- [ ] 回答各 Task 讨论题：特征与假设、预处理负担、复用和扩展、多任务支持、新数据集接入、前三周工程决定及未来改进。
-- [ ] `git diff --check`、按 README 复现、核对提交包；模型和生成数据放已忽略的 `data/` 或 `artifacts/`。
+- [ ] B 完成流侧解析/过滤和 `bytes_changed`、`is_revert`，实现热榜、编辑战候选与实时 bot/human 指标；C 完成历史活动聚合和热力图展示。
+- [ ] C 的每日批处理先生成与流侧一致的 5 分钟指标，再按 wiki/日内小时计算均值、标准差和样本数，保存基线版本。
+- [ ] B 的流任务关联 C 提供的历史基线并检测 z-score > 3；启动固定已发布版本，通过受控重启切换，验证 checkpoint 恢复和重试时版本一致性。
+- [ ] C 设计 Cassandra 表，根据看板查询确定分区与聚簇键，保留窗口、指标/条目和基线版本；使同窗口更新、重放和重试不产生重复结果。
+- [ ] 小样本核对乱序/迟到、重复、关键词误报、交替回退、bot 过滤、零分母、无基线和批流口径一致性。
 
-## 建议三人分工与交接
+### Phase 4：可重复实验与展示
 
-| 角色 | 建议任务 | 交接物 |
+**Status:** pending
+
+- [ ] A 提供回放工具，C 组织实验；固定同一归档输入，按受控速率（含高于自然流量）重放 Kafka；记录版本、数据量、Kafka 分区数和 trigger interval。
+- [ ] 明确回放 event time、水位线推进、结束后的窗口完成规则和延迟起终点；避免把原始事件年龄算作系统延迟。
+- [ ] C 负责性能实验，B 提供流处理指标，A 支持回放与环境；比较吞吐、端到端延迟及积压，建议报告 p50/p95，并标注运行资源、预热、重复次数和异常/丢失计数。
+- [ ] 固定窗口与输入核对结果一致后比较配置；B 负责编辑战候选人工抽样评估，记录抽样规则、数量、标签和 precision，不把正常反破坏当作真实争议结论。
+- [ ] C 对同一批任务比较 Delta 分区裁剪开/关的耗时与扫描范围，保证查询输出相同。
+- [ ] C 的看板完成热门条目、潜在编辑战、bot/human 比例和语言活动热力图；第一版只展示已完成窗口，明确窗口时间及等待语义。
+
+### Phase 5：最终交付
+
+**Status:** pending
+
+- [ ] 交付 producer、Spark 流/批作业、Cassandra Schema、Docker Compose、Grafana 看板（或说明采用的备选）。
+- [ ] C 汇总 **2 页报告**，A 汇总 README 运行说明；各人提供自己模块的说明和实测结果，覆盖启动、采集、批基线、重放、实验复现、停止与数据保留。
+- [ ] A 牵头、B/C 配合，在独立输出目录验收完整链路、重启恢复和复现实验；记录实测限制，保留 W1–W4 已交付内容。
+
+## 已确认分工
+
+| 角色 | 负责内容 | 交付与边界 |
 | --- | --- | --- |
-| A：数据集与入口 | Task 1 数据集生成、Delta 落盘、split/快照；把正式快照交给共用训练入口 | 训练集 Schema、固定快照、生成 CLI、小样本 |
-| B：特征与模型 | Task 2 特征流程；Task 3 模型、指标、保存加载和重训练入口 | train-only Pipeline、特征可用时间、训练 CLI |
-| C：对照与交付 | Task 4 raw 路线、公平对照、特征组实验、最终联调及材料 | 双路线一致性、分阶段计时、evaluation report |
+| **A：数据接入与存储** | SSE producer → Kafka、原始数据 HDFS/Delta 归档、可控速率回放工具；Docker Compose 主体、整体集成、README 运行说明 | 提供输入与归档契约、固定回放数据和启动入口；B/C 配合组件接入与排障 |
+| **B：流处理** | Structured Streaming 解析/Wikipedia 过滤、热榜滑动窗口、疑似编辑战、实时 bot/human 指标；关联历史基线并做异常检测 | 提供流处理结果、运行指标和正确性测试；负责编辑战候选的人工抽样评估 |
+| **C：批处理、结果存储与展示** | Spark SQL 5 分钟指标和 wiki × hour 基线、历史活动聚合；Cassandra 表设计、Grafana 仪表盘 | 组织性能实验、负责 Delta 分区裁剪实验和最终报告；A 提供回放，B 提供流处理指标 |
 
-键、标签、split、特征可用时间和 B 的输入接口已固定在 `configs/ml.json`、`docs/data_contract.md` 与 `docs/w4_role_b_features_model.md`。B 已创建 `ml_pipeline.py` 及两个薄 CLI；A/C 应共用该下游实现，不复制特征和训练逻辑。
+各人负责自己组件的启动配置、测试、排障和模块说明。A 牵头集成，不承担替其他人完成模块实现的责任；不以“代码量最少”作为 A 工作量较轻的依据。
 
-## 下一步与错误记录
+## B/C 接口：第一版已确认
 
-下一步：B 对 A 的正式训练 Delta 执行真实数据特征与训练；C 再用相同接口接 raw 路线并做公平对照。
+完整逻辑契约见 [WikiPulse B/C 接口 v1](docs/wikipulse_bc_contract.md)。
 
-| 本次错误 | 次数 | 处理 |
-| --- | --- | --- |
-| apply_patch 拒绝同补丁对同路径 Delete/Add | 1 | 无文件被该补丁改写；归档后改为直接写入文档 |
-| JSON 管道带 BOM，首次解析失败 | 1 | 用 utf-8-sig 解码后解析，未改动文件内容 |
-| PowerShell 管道默认编码把新写入中文转为问号 | 1 | 改用 ASCII 转义 JSON 传递并以 UTF-8 写入；重新核验中文和归档正文 |
-| 当前 macOS 无 Java Runtime，Spark 针对性测试无法启动 | 1 | 语法编译和配置导入通过；保留测试，需在 README 规定的 JDK 21 环境运行 |
-| 本地 `.venv` 的 Python 3.11.9 符号链接失效 | 1 | 未改用户环境；用可用 Python 完成静态检查，正式验证前按 setup 脚本重建环境 |
+- C 负责建表、字段映射和读写模块；B 在流作业内调用，不新增交接服务。
+- B 输出热榜、编辑战候选、5 分钟活动和异常检测结果；第一版只输出完成窗口，使用稳定业务键覆盖重试结果。
+- C 提供按版本/wiki/UTC 日内小时组织的历史 5 分钟计数基线；B 启动固定版本，通过受控重启切换每日更新。
+- 无基线、低样本或零标准差时保留未检测状态；公共规则由 B 维护、C 复用。
+- 类型、Cassandra 物理表、函数签名、样本阈值、标准差定义和窗口算法细节待定；Phase 1 技术验证仍未完成。
 
-W3 错误保留在归档；后续特别注意宿主时区、Spark 惰性计算重复执行及模拟更新的评估边界。
+下一步细化契约并推进 Phase 1 的技术验证。proposal 未提供截止日期、采集天数或量化性能目标，暂不填造。
+
+本轮编辑问题：一次写入命令超过 Windows 命令行长度限制，进程未启动；已拆为归档和逐文件写入。
+
+分工更新时 PowerShell 内嵌 Python 引号解析失败，未写入文件；改用 apply_patch 完成。

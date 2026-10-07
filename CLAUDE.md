@@ -30,6 +30,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
 .\.venv\Scripts\python.exe -m scripts.run_data_products --mode auto  # refresh products built from an older snapshot
 .\.venv\Scripts\python.exe -m scripts.run_monitoring_report  # W3 ops queries over metadata/pipeline_runs
 .\.venv\Scripts\python.exe -m scripts.run_w3_evaluation      # W3 production-readiness measurements
+.\.venv\Scripts\python.exe -m scripts.run_ml_dataset         # W4 zone-hour training Delta table + metadata
+.\.venv\Scripts\python.exe -m scripts.run_ml_training        # W4 train/select/evaluate/save, reads the metadata's version
+.\.venv\Scripts\python.exe -m scripts.run_w4_evaluation      # W4 raw-file vs platform route, feature groups
 ```
 
 Tests use `unittest` with small in-memory fixtures and temporary Delta tables — no raw data needed:
