@@ -1,6 +1,6 @@
 # 项目进度
 
-更新：2026-10-07。**W1–W4 已完成；当前进入 WikiPulse Final Project，已完成 proposal 梳理，尚未开始实现。**本地分支 `c/w4-fixes`，检查基点 `7abb884`；本轮保留既有归档整理改动。
+更新：2026-10-13。**W1–W4 已完成；WikiPulse Final Project 的角色 A 采集、归档、回放链路已实现并完成小样本实测。**当前工作在 `feat/wikipulse-role-a`，A 正持续采集并归档，B/C 分析和全链路看板联调仍待各角色实现。
 
 ## W1–W3 历史摘要
 
@@ -66,3 +66,7 @@ A 完成训练集，B 完成特征/模型/再训练入口，C 完成联调修复
 - 记录基线和四类结果字段、UTC/窗口口径、共享解析规则及未检测状态；基线运行期间固定版本，受控重启切换。
 - 同步 task_plan/findings；类型、物理表、函数签名、样本阈值及算法细节仍待定，Phase 1 保持 in_progress。
 - 本轮为文档落地，未实现代码、启动服务或运行 Spark 测试；窗口完成、基线切换和重试行为留待验证。
+
+## WikiPulse 角色 A 当前实现与验证
+
+角色 A 已实现 Wikimedia SSE → Kafka 原始输入、Kafka → HDFS Delta 原始归档、checkpoint 恢复、坏 JSON 原样保留、固定 Delta 版本限速回放及逐条核对；对应代码、契约、运行手册和 Compose 入口已在仓库中。A 的本地测试 6 项通过，Docker smoke 已验证七个服务启动、Delta version 5 为 122 行/122 个物理键、坏 JSON 2 行，以及 5 条回放的 `sent=5/source_rows=5` 和 `verified=5`；此前 100+20 条真实样本、坏 JSON、20 条回放也逐条核对通过。前一轮 producer 在 00:50 记录累计发布 100,123 条、`bad_json=0`、16 次重连；进程退出后已于 00:54 从状态文件恢复并重新启动，00:57 新进程已发布 5,248 条、`bad_json=0`，累计约 105,371 条。已在 producer 中加入按进程隔离临时文件和有限替换重试；Kafka offset、Delta 当前版本/行数和存储增长尚未核实，现有样本不足以外推全天流量或历史基线。A 的输入契约已可交给 B/C，但 Cassandra 结果表、看板、B/C 分析和完整端到端验收尚未完成。
