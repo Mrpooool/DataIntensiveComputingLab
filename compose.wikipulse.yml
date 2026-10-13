@@ -1,0 +1,104 @@
+name: wikipulse
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://:29092,CONTROLLER://:29093,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "9092:9092"
+    mem_limit: 1g
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    environment:
+      CLUSTER_NAME: wikipulse
+      CORE_CONF_fs_defaultFS: hdfs://namenode:8020
+      HDFS_CONF_dfs_replication: 1
+    ports:
+      - "9870:9870"
+      - "8020:8020"
+    mem_limit: 1g
+    volumes:
+      - namenode-data:/hadoop/dfs/name
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:8020
+      HDFS_CONF_dfs_replication: 1
+    depends_on:
+      - namenode
+    mem_limit: 1g
+    volumes:
+      - datanode-data:/hadoop/dfs/data
+
+  cassandra:
+    image: cassandra:4.1.9
+    environment:
+      MAX_HEAP_SIZE: 768M
+      HEAP_NEWSIZE: 192M
+    ports:
+      - "9042:9042"
+    mem_limit: 1536m
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: docker/wikipulse-spark.Dockerfile
+    command: /usr/local/lib/python3.11/site-packages/pyspark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_DAEMON_MEMORY: 512m
+    ports:
+      - "18080:8080"
+    mem_limit: 768m
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: docker/wikipulse-spark.Dockerfile
+    command: /usr/local/lib/python3.11/site-packages/pyspark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 1 --memory 1g
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_DAEMON_MEMORY: 512m
+    depends_on:
+      - spark-master
+    mem_limit: 2g
+
+  spark-client:
+    build:
+      context: .
+      dockerfile: docker/wikipulse-spark.Dockerfile
+    command: sleep infinity
+    depends_on:
+      - spark-master
+      - spark-worker
+      - kafka
+      - namenode
+      - datanode
+    mem_limit: 2g
+
+volumes:
+  kafka-data:
+  namenode-data:
+  datanode-data:
+  cassandra-data:

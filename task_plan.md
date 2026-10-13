@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-10-07。当前任务依据：[WikiPulse proposal](proposal_fixed.pdf)（1 页）。[Assignment.md](Assignment.md) 对应的 W1–W4 已完成；现在进入 **Final Project：WikiPulse**，不将其称为 W5，也不延续 Taxi 预测作为新目标。
+更新：2026-10-13。当前任务依据：[WikiPulse proposal](proposal_fixed.pdf)（1 页）。[Assignment.md](Assignment.md) 对应的 W1–W4 已完成；现在进入 **Final Project：WikiPulse**，不将其称为 W5，也不延续 Taxi 预测作为新目标。
 
 ## 已完成基础
 
@@ -37,7 +37,7 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 - [x] 确认 A 数据接入/集成、B 流处理、C 批处理/结果存储/展示的分工。
 - [x] 确认 [B/C 第一版逻辑接口](docs/wikipulse_bc_contract.md)：C 提供读写模块、B 调用；只展示完成窗口，基线按版本固定并通过受控重启切换。
 - [ ] 完成接口剩余类型、物理表、参数和函数签名设计，并通过小样本交接验证。
-- [ ] 确定最终项目代码目录，隔离既有课程产物；固定事件 Schema、标识/去重键、事件时间与接收时间、异常记录和来源字段。
+- [x] 确定 WikiPulse 独立代码目录并隔离既有课程产物；固定 A 原始事件 Schema、物理记录键、事件/接收时间与来源字段。
 - [x] 固定 UTC、左闭右开窗口、整点对齐的 5 分钟窗口，以及批流复用公共解析/过滤/回退识别规则。
 - [ ] 确定编辑战 30 分钟窗口步长和“交替回退”的判定；明确机器人是否参与趋势分数，摘要关键词按词匹配及多语言范围。
 - [ ] 明确回退数与回退率的关系：proposal 算法按 5 分钟计数检测，若增加回退比例需另定分母和零值规则；明确冷启动、标准差为 0、采集中断和迟到事件的处理。
@@ -47,11 +47,12 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 
 ### Phase 2：采集、归档与最小端到端（A 牵头集成）
 
-**Status:** pending
+**Status:** in_progress
 
-- [ ] 实现 SSE producer、Kafka topic/key、连接重试与恢复策略；保留原始事件，记录采集覆盖时间、数量和可观察的缺口。
-- [ ] Kafka 原始事件落 HDFS，定义路径/分区、checkpoint 和批次元数据；为 Delta 分区裁剪实验准备明确的 Delta 表。
-- [ ] 最小验收：少量真实事件从 producer 到 Kafka、Spark、Cassandra 再到看板；坏 JSON、重复事件、重启恢复有小样本验证。
+- [x] 实现 SSE producer、Kafka topic/key、连接重试与恢复策略；保留原始事件，记录采集覆盖时间、数量和可观察的缺口。
+- [x] Kafka 原始事件落 HDFS，定义路径/分区、checkpoint 和批次元数据；为 Delta 分区裁剪实验准备明确的 Delta 表。
+- [x] A 链路小样本验收：真实事件从 producer 到 Kafka、Spark/HDFS Delta；坏 JSON 保留、checkpoint 恢复和固定版本回放核对通过。
+- [ ] B/C 链路验收：事件经实时分析写入 Cassandra 并展示到看板；重复事件等跨模块行为仍需联调。
 - [ ] 尽早开始积累历史数据，测量原始流量、Wikipedia 文章编辑占比、存储增长；历史不足时不宣称异常基线可靠。
 
 ### Phase 3：四类分析与历史基线
@@ -66,9 +67,9 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 
 ### Phase 4：可重复实验与展示
 
-**Status:** pending
+**Status:** in_progress
 
-- [ ] A 提供回放工具，C 组织实验；固定同一归档输入，按受控速率（含高于自然流量）重放 Kafka；记录版本、数据量、Kafka 分区数和 trigger interval。
+- [x] A 提供回放工具，C 组织实验；固定同一归档输入，按受控速率（含高于自然流量）重放 Kafka；记录版本、数据量、Kafka 分区数和 trigger interval。
 - [ ] 明确回放 event time、水位线推进、结束后的窗口完成规则和延迟起终点；避免把原始事件年龄算作系统延迟。
 - [ ] C 负责性能实验，B 提供流处理指标，A 支持回放与环境；比较吞吐、端到端延迟及积压，建议报告 p50/p95，并标注运行资源、预热、重复次数和异常/丢失计数。
 - [ ] 固定窗口与输入核对结果一致后比较配置；B 负责编辑战候选人工抽样评估，记录抽样规则、数量、标签和 precision，不把正常反破坏当作真实争议结论。

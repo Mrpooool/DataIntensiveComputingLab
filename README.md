@@ -1,5 +1,9 @@
 # Urban data integration platform
 
+## WikiPulse final project
+
+The final project shares this repository but uses separate modules and data paths from Weeks 1-4. Role A's Wikimedia capture, HDFS/Delta raw archive, fixed replay, and Compose setup are documented in [the WikiPulse A runbook](docs/wikipulse_a_runbook.md) and [input/archive contract](docs/wikipulse_a_contract.md). The existing Taxi workflow below remains available.
+
 A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation. Week 4 builds a zone-hour taxi demand dataset, a train-only feature pipeline and a reproducible, retrainable Spark ML training run, and compares preparing the data from the raw files with preparing it from the platform.
 
 ## Setup

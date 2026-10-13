@@ -2,6 +2,24 @@
 
 [English](README.md)
 
+## Final Project：WikiPulse（角色 A）
+
+WikiPulse 与 W1–W4 使用独立模块和数据路径，不依赖出租车流水线。角色 A 的实现位于 `src/dic_pipeline/wikipulse/`，负责 Wikimedia SSE → Kafka、Kafka → HDFS/Delta 原始归档，以及固定 Delta 版本回放。Kafka、Spark、HDFS 和 Cassandra 的 Compose 启动配置见 [运行手册](docs/wikipulse_a_runbook.md)，输入字段和保留规则见 [契约](docs/wikipulse_a_contract.md)。
+
+先启动 Docker Compose 基础服务并创建 `wikipulse.raw.live` topic，再分别运行归档和 producer。容器内使用 `kafka:29092`，宿主机 producer 使用 `localhost:9092`。回放必须使用新的目标 topic 和 run ID：
+
+```powershell
+docker compose -f compose.wikipulse.yml up -d
+docker compose -f compose.wikipulse.yml exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic wikipulse.raw.live --partitions 3 --replication-factor 1
+```
+
+角色 A 的本地 smoke test 不需要 Kafka 或原始 Taxi 数据；设置 `JAVA_HOME` 后运行：
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a -v
+```
+
 课程项目：用 PySpark + Delta Lake 处理四份 2024 年纽约市数据。W1 完成摄入、清洗、校验与行程整合；W2 在此基础上增加六个分析查询、四张可复用数据产品，以及针对它们的四类优化对照实验。W3 支持增量更新与 Schema 演进、扩展校验、统一监控，并做了生产就绪评测。
 
 截至 2026-09-27：W1、W2、W3 的代码、全量运行与评测均已完成。进度见 [progress.md](progress.md)。
