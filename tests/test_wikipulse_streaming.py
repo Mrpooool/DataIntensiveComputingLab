@@ -105,8 +105,9 @@ class StreamingAnalyticsTests(unittest.TestCase):
         self.assertEqual(candidate.reverter_sequence, ["Alice", "Bob", "Alice"])
         self.assertEqual((candidate.revert_count, candidate.distinct_nonbot_editors,
                           candidate.user_switches), (3, 2, 2))
-        self.assertEqual(candidate.first_revert_at, (START + timedelta(minutes=1)).replace(tzinfo=None))
-        self.assertEqual(candidate.last_revert_at, (START + timedelta(minutes=3)).replace(tzinfo=None))
+        # collect() returns naive local time; compare instants so any machine time zone passes
+        self.assertEqual(candidate.first_revert_at.astimezone(UTC), START + timedelta(minutes=1))
+        self.assertEqual(candidate.last_revert_at.astimezone(UTC), START + timedelta(minutes=3))
 
     def test_activity_covers_all_wikis_and_bot_plus_human_equals_total(self) -> None:
         at = START + timedelta(minutes=1)

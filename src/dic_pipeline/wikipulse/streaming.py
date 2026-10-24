@@ -241,10 +241,15 @@ def start_queries(raw: DataFrame, baseline: DataFrame, *, checkpoint_root: str,
         _log_write("edit_war_candidates", batch_id, rows_written=count)
 
     def write_activity(batch: DataFrame, batch_id: int) -> None:
-        activity_count = store.write_rows(batch.select(*ACTIVITY_COLUMNS), "activity_5m",
-                                          keyspace=keyspace, hosts=hosts)
-        anomaly_count = store.write_rows(detect_anomalies(batch, baseline), "anomalies",
-                                         keyspace=keyspace, hosts=hosts)
+        # Both tables read the same micro-batch; cache it so the stateful plan runs once.
+        batch.persist()
+        try:
+            activity_count = store.write_rows(batch.select(*ACTIVITY_COLUMNS), "activity_5m",
+                                              keyspace=keyspace, hosts=hosts)
+            anomaly_count = store.write_rows(detect_anomalies(batch, baseline), "anomalies",
+                                             keyspace=keyspace, hosts=hosts)
+        finally:
+            batch.unpersist()
         _log_write("activity_anomalies", batch_id, activity_rows=activity_count,
                    anomaly_rows=anomaly_count)
 
