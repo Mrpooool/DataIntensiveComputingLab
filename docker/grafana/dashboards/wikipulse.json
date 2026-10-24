@@ -733,9 +733,9 @@
     },
     {
       "id": 10,
-      "type": "table",
-      "title": "Hourly edits on the selected day - focus wikis",
-      "description": "Edits per UTC hour, summed over the completed 5-minute windows of that hour.",
+      "type": "status-history",
+      "title": "Activity heatmap - edits per 5 minutes, focus wikis",
+      "description": "Completed 5-minute windows; the time axis is UTC, so a 24-hour range shows hour-of-day patterns.",
       "datasource": {
         "type": "hadesarchitect-cassandra-datasource",
         "uid": "wikipulse-cassandra"
@@ -755,101 +755,42 @@
           },
           "queryType": "query",
           "rawQuery": true,
-          "target": "SELECT wiki, edit_count, bot_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki')"
+          "target": "SELECT wiki, edit_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki') AND window_start >= $__timeFrom AND window_start < $__timeTo"
         }
       ],
       "transformations": [
         {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "formatTime",
+          "id": "organize",
           "options": {
-            "timeField": "window_start",
-            "outputFormat": "HH",
-            "useTimezone": true
-          }
-        },
-        {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "wiki": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "window_start": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "edit_count": {
-                "aggregations": [
-                  "sum"
-                ],
-                "operation": "aggregate"
-              },
-              "bot_count": {
-                "aggregations": [
-                  "sum"
-                ],
-                "operation": "aggregate"
-              }
+            "excludeByName": {
+              "wiki": true
             }
-          }
-        },
-        {
-          "id": "groupingToMatrix",
-          "options": {
-            "columnField": "window_start",
-            "rowField": "wiki",
-            "valueField": "edit_count (sum)"
           }
         }
       ],
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "colWidth": 1,
+        "legend": {
+          "showLegend": false
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "decimals": 0,
           "color": {
             "mode": "continuous-BlYlRd"
-          },
-          "custom": {
-            "cellOptions": {
-              "type": "color-background",
-              "mode": "gradient"
-            },
-            "align": "center",
-            "minWidth": 36
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "wiki\\window_start"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "auto"
-                }
-              },
-              {
-                "id": "displayName",
-                "value": "wiki \\ UTC hour"
-              }
-            ]
-          }
-        ]
+        "overrides": []
       }
     },
     {
       "id": 11,
-      "type": "table",
-      "title": "Hourly bot share on the selected day - focus wikis",
-      "description": "bot edits / all edits per UTC hour.",
+      "type": "status-history",
+      "title": "Bot activity heatmap - bot edits per 5 minutes, focus wikis",
+      "description": "bot_count per completed 5-minute window; read it against the activity heatmap on the left.",
       "datasource": {
         "type": "hadesarchitect-cassandra-datasource",
         "uid": "wikipulse-cassandra"
@@ -869,106 +810,35 @@
           },
           "queryType": "query",
           "rawQuery": true,
-          "target": "SELECT wiki, edit_count, bot_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki')"
+          "target": "SELECT wiki, bot_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki') AND window_start >= $__timeFrom AND window_start < $__timeTo"
         }
       ],
       "transformations": [
         {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "formatTime",
+          "id": "organize",
           "options": {
-            "timeField": "window_start",
-            "outputFormat": "HH",
-            "useTimezone": true
-          }
-        },
-        {
-          "id": "groupBy",
-          "options": {
-            "fields": {
-              "wiki": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "window_start": {
-                "aggregations": [],
-                "operation": "groupby"
-              },
-              "edit_count": {
-                "aggregations": [
-                  "sum"
-                ],
-                "operation": "aggregate"
-              },
-              "bot_count": {
-                "aggregations": [
-                  "sum"
-                ],
-                "operation": "aggregate"
-              }
+            "excludeByName": {
+              "wiki": true
             }
-          }
-        },
-        {
-          "id": "calculateField",
-          "options": {
-            "mode": "binary",
-            "alias": "bot share",
-            "binary": {
-              "left": "bot_count (sum)",
-              "operator": "/",
-              "right": "edit_count (sum)"
-            }
-          }
-        },
-        {
-          "id": "groupingToMatrix",
-          "options": {
-            "columnField": "window_start",
-            "rowField": "wiki",
-            "valueField": "bot share"
           }
         }
       ],
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "colWidth": 1,
+        "legend": {
+          "showLegend": false
+        }
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "decimals": 0,
+          "unit": "short",
           "color": {
             "mode": "continuous-BlYlRd"
-          },
-          "custom": {
-            "cellOptions": {
-              "type": "color-background",
-              "mode": "gradient"
-            },
-            "align": "center",
-            "minWidth": 36
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "wiki\\window_start"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "auto"
-                }
-              },
-              {
-                "id": "displayName",
-                "value": "wiki \\ UTC hour"
-              }
-            ]
-          }
-        ]
+        "overrides": []
       }
     }
   ]
