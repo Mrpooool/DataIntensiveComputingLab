@@ -1,16 +1,15 @@
 """Role A ingestion and raw preservation fixtures."""
 
 import json
-import os
-import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from pyspark.sql import Row, SparkSession
+from pyspark.sql import Row
 
+from dic_pipeline.ingestion import create_spark
 from dic_pipeline.wikipulse.archive import archive_columns
 from dic_pipeline.wikipulse.producer import event_key, load_state, save_state, sse_events
 
@@ -73,10 +72,7 @@ class ProducerTests(unittest.TestCase):
 class ArchiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ["PYSPARK_PYTHON"] = sys.executable
-        cls.spark = (SparkSession.builder.master("local[1]").appName("wikipulse-a-test")
-                     .config("spark.sql.session.timeZone", "UTC")
-                     .config("spark.driver.host", "127.0.0.1").getOrCreate())
+        cls.spark = create_spark(master="local[1]", shuffle_partitions=1)
 
     @classmethod
     def tearDownClass(cls) -> None:

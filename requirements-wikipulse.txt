@@ -1,3 +1,4 @@
 -r requirements.txt
 requests==2.32.5
 kafka-python==2.2.15
+cassandra-driver==3.30.1

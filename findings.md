@@ -52,3 +52,10 @@ proposal 的 20–50 events/s、每日约 200–400 万原始事件，以及语�
 ## 验证范围与问题记录
 
 本次只阅读 PDF、本地规范、配置和模块清单并更新规划；未连接 EventStreams、启动容器或执行新实验。Poppler 渲染提示 Symbol/ArialUnicode 字体警告，但输出整页内容可读，已与文本核对；未修改原 PDF。
+
+## 2026-10-13 交接快照核对与接口 v2
+
+- 用 A 的交接快照核对后冻结 [B/C 接口 v2](docs/wikipulse_bc_contract.md)，核对数字记在其文末。要点：重复全为 producer 重试的相邻 offset；正文事件迟到最大 87 秒，2 分钟 watermark 不丢数据；Kafka 时间的空档已由 `Last-Event-ID` 补回，缺口须按事件时间判断；`révo*` 会误配 “révolution”；只要求“换人 ≥ 2 次”会把多名巡查员各自回退误判为编辑战。
+- 事件时间到 Kafka 写入的中位延迟约 148 秒，是来源延迟；性能实验的延迟起点须用回放写入 Kafka 的时间。
+- spark-cassandra-connector 无 Spark 4 正式版（3.5.1 仅 Spark 3.5；Spark 4.1 支持仍是未合并 PR）；改用 Python `cassandra-driver` 3.30.1 在 `foreachBatch` 内写入，结果量小，driver 端写入可行。Grafana 插件 `hadesarchitect-cassandra-datasource` 3.3.0 支持 Grafana 7.4–12.x，Grafana 新镜像以 `GF_PLUGINS_PREINSTALL` 安装插件。以上为资料核查，未实测。
+- 8.2 小时历史每个日内小时最多 12 个窗口，低于最低 24 样本；可靠基线依赖 A 的多日导出。

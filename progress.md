@@ -1,6 +1,6 @@
 # 项目进度
 
-更新：2026-10-13。**W1–W4 已完成；WikiPulse Final Project 的角色 A 采集、归档、回放链路已实现并完成小样本实测。**当前工作在 `feat/wikipulse-role-a`，A 正持续采集并归档，B/C 分析和全链路看板联调仍待各角色实现。
+更新：2026-10-24。**W1–W4 已完成；WikiPulse 角色 A 链路、C 的基线/存储接口及 B 的流作业已实现。**B/C 接口 v2 保持不变；B 的文件流到 Cassandra 四表联调已通过。剩余重点是 A 的固定 Kafka 回放验收，以及 C 的看板、性能实验和最终报告。
 
 ## W1–W3 历史摘要
 
@@ -70,3 +70,25 @@ A 完成训练集，B 完成特征/模型/再训练入口，C 完成联调修复
 ## WikiPulse 角色 A 当前实现与验证
 
 角色 A 已实现 Wikimedia SSE → Kafka 原始输入、Kafka → HDFS Delta 原始归档、checkpoint 恢复、坏 JSON 原样保留、固定 Delta 版本限速回放及逐条核对；对应代码、契约、运行手册和 Compose 入口已在仓库中。A 的本地测试 6 项通过，Docker smoke 已验证七个服务启动、Delta version 5 为 122 行/122 个物理键、坏 JSON 2 行，以及 5 条回放的 `sent=5/source_rows=5` 和 `verified=5`；此前 100+20 条真实样本、坏 JSON、20 条回放也逐条核对通过。前一轮 producer 在 00:50 记录累计发布 100,123 条、`bad_json=0`、16 次重连；进程退出后已于 00:54 从状态文件恢复并重新启动，00:57 新进程已发布 5,248 条、`bad_json=0`，累计约 105,371 条。已在 producer 中加入按进程隔离临时文件和有限替换重试；Kafka offset、Delta 当前版本/行数和存储增长尚未核实，现有样本不足以外推全天流量或历史基线。A 的输入契约已可交给 B/C，但 Cassandra 结果表、看板、B/C 分析和完整端到端验收尚未完成。
+
+## 2026-10-13：C 冻结 B/C 接口 v2 与公共解析模块
+
+- 用 A 的交接快照（Delta version 0，783,315 行，正文 edit/new 105,478 行）核对去重、迟到、采集缺口、回退关键词和编辑战规则；数字记录在 `docs/wikipulse_bc_contract.md` 文末。
+- 依据核对结果：fr 关键词收紧以排除 “révolution”；sv 关键词标为未实测；编辑战“交替”改为出现 A → 他人 → A；采集缺口按原始事件时间判断（Kafka 时间上的 181 秒空档已由 `Last-Event-ID` 补回）。
+- 接口 v2 补齐字段类型、`metric`/`status` 枚举、四类结果和基线的 Cassandra 物理表、`store.write_rows`/`read_baseline` 签名、热榜 Top 10 与并列规则、基线 7 天/最低 24 样本/样本标准差及发布标识。
+- 新增 `src/dic_pipeline/wikipulse/events.py`（解析、范围过滤、批流去重、回退识别）和 `tests/test_wikipulse_events.py`，5 项通过；在交接快照上得到 105,476 行（去掉 2 条正文重复）、重点语言非机器人回退 1,319 次，与核对脚本一致。
+- 资料核查：spark-cassandra-connector 尚无 Spark 4 正式版，写入改用 Python `cassandra-driver` 3.30.1；Grafana 可用 `hadesarchitect-cassandra-datasource` 3.3.0（Grafana 12.x）。两者均未实测。
+- 新增 `store.py`（建表、四类结果写入、基线发布/读取，Python driver）、`baseline.py` 与 `scripts/run_wikipulse_baseline.py`，以及 `docs/wikipulse_c_runbook.md`；`requirements-wikipulse.txt` 增加 `cassandra-driver==3.30.1`。
+- 测试：A 6 项、events 5 项、baseline 5 项、store 6 项在同一进程共 22 项通过（后两者使用本机 Cassandra 容器，临时 keyspace）。`test_wikipulse_a` 改用 `create_spark()`：原先自建无 Delta 的 session，先运行时会使同进程后续 Delta 测试失败。`spark-client` 镜像内经 `cassandra` 主机名读基线、重复写入只留 1 行。
+- 独立代码审查后修复：已发布基线版本不可变（换输入重建同名版本报错）、跨历史边界的采集缺口、零星旧时间戳拉长 `history_start`；修复后 WikiPulse 测试 23 项通过。
+- 在交接快照上发布基线 `20261013T0600Z`：98/98 个窗口覆盖、无缺口、1,926 行（214 个 wiki × 9 个 UTC 小时），无一行达到 24 个样本。
+- 未完成：看板（Grafana 插件实测）、B 流作业联调、性能与分区裁剪实验、报告；可用基线依赖 A 的多日导出。
+
+## 2026-10-24：B 完成 Structured Streaming 分析与 C 接口联调
+
+- 在 `feat/wikipulse-role-b` 基于 C 的接口分支实现 `streaming.py` 和运行入口：共享解析/2 分钟 watermark 后分成热榜、编辑战、5 分钟活动/异常三条独立查询，各自使用持久 checkpoint。
+- 热榜实现 10 分钟窗口/1 分钟步长、非机器人过滤、编辑人数和稳定 Top 10；编辑战实现 30 分钟窗口/5 分钟步长、按事件时间/修订号排序及 A→他人→A 判定；活动覆盖全部 Wikipedia，异常固定关联启动时指定的基线版本。
+- 实时结果写 `wikipulse`；回放要求 `run_id`，自动写 `wikipulse_replay_<run_id>` 并隔离 checkpoint，避免污染实时结果。每个 `foreachBatch` 输出 JSON 行数日志供 C 的实验记录使用。
+- B 的 6 项纯转换测试通过；文件流推进 watermark 后，`hot_pages`、`edit_war_candidates`、`activity_5m`、`anomalies` 四表端到端 Cassandra 联调通过。A/公共事件/C 基线非存储部分/B 合并回归 22 项通过，容器内因既有测试默认连接 `localhost` 跳过 2 个 Cassandra 测试类；B 自己的 Cassandra 联调使用 `cassandra` 主机名实测通过。
+- 在 Delta version 0 固定快照上运行与生产相同的编辑战规则：完成窗口得到 24 个重叠候选，折叠为全部 4 个候选页面。按“实质内容/来源争议”人工标注 1 个正例、3 个反破坏或傀儡清理负例，页面级 precision 为 25%；证据与局限见 `docs/wikipulse_b_edit_war_evaluation.md`。
+- 待做：用 A 的固定 Kafka 回放验证 checkpoint 重启、迟到丢弃和同一固定输入的批流一致性；C 接手四张结果表做看板、性能实验和最终报告。现有 8.2 小时基线全部低于 24 个样本，异常状态会是 `insufficient_samples`，不能包装成可靠异常检测。
