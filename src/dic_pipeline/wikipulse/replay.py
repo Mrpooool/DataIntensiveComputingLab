@@ -11,6 +11,8 @@ from delta.tables import DeltaTable
 from kafka import KafkaProducer
 from pyspark.sql import SparkSession, functions as F
 
+ACK_GROUP = 1000
+
 
 def _binary(value) -> bytes | None:
     return None if value is None else bytes(value)
@@ -54,20 +56,28 @@ def replay(spark: SparkSession, archive_path: str, version: int, bootstrap: str,
     if not count:
         raise ValueError("Pinned archive is empty")
     producer = KafkaProducer(bootstrap_servers=bootstrap.split(","), acks="all", retries=10,
-                             max_in_flight_requests_per_connection=1)
+                             max_in_flight_requests_per_connection=1, linger_ms=20)
     started = datetime.now(timezone.utc).isoformat()
     clock_start = time.monotonic()
     sent = 0
+    pending = []
     try:
         for row in frame.toLocalIterator():
             target = clock_start + sent / events_per_second
             delay = target - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            producer.send(topic, key=_binary(row["kafka_key"]),
-                          value=bytes(row["raw_value"]),
-                          headers=_replay_headers(row, run_id, version)).get(timeout=60)
+            pending.append(producer.send(topic, key=_binary(row["kafka_key"]),
+                                         value=bytes(row["raw_value"]),
+                                         headers=_replay_headers(row, run_id, version)))
             sent += 1
+            # Waiting on each send caps the rate near 100/s; acknowledge in groups instead.
+            if len(pending) >= ACK_GROUP:
+                for future in pending:
+                    future.get(timeout=60)
+                pending.clear()
+        for future in pending:
+            future.get(timeout=60)
     finally:
         producer.flush(timeout=60)
         producer.close()
