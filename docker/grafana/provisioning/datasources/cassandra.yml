@@ -1,0 +1,11 @@
+apiVersion: 1
+datasources:
+  - name: WikiPulse Cassandra
+    uid: wikipulse-cassandra
+    type: hadesarchitect-cassandra-datasource
+    access: proxy
+    url: cassandra:9042
+    isDefault: true
+    jsonData:
+      keyspace: wikipulse
+      consistency: ONE
