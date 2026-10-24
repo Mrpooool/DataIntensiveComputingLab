@@ -66,13 +66,9 @@ def parse_events(frame: DataFrame) -> DataFrame:
     })
 
 
-def analysis_events(frame: DataFrame) -> DataFrame:
-    """Parse, keep Wikipedia article edits/new pages, and drop repeated source IDs.
-
-    A streaming frame gets the shared event-time watermark here; downstream window
-    aggregations reuse it.
-    """
-    events = parse_events(frame).where(
+def analysis_rows(frame: DataFrame) -> DataFrame:
+    """Parse and keep Wikipedia article edits/new pages, before de-duplication."""
+    return parse_events(frame).where(
         F.col("server_name").endswith(".wikipedia.org")
         & F.col("type").isin("edit", "new")
         & (F.col("namespace") == 0)
@@ -81,6 +77,15 @@ def analysis_events(frame: DataFrame) -> DataFrame:
         & F.col("wiki").isNotNull()
         & F.col("title").isNotNull()
     )
+
+
+def analysis_events(frame: DataFrame) -> DataFrame:
+    """Parse, keep Wikipedia article edits/new pages, and drop repeated source IDs.
+
+    A streaming frame gets the shared event-time watermark here; downstream window
+    aggregations reuse it.
+    """
+    events = analysis_rows(frame)
     if events.isStreaming:
         return events.withWatermark("event_time", WATERMARK).dropDuplicatesWithinWatermark(["source_id"])
     return events.dropDuplicates(["source_id"])

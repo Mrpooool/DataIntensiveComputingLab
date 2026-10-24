@@ -1,6 +1,6 @@
 # WikiPulse B/C 接口 v2
 
-更新：2026-10-13。v1 的逻辑口径不变，本版补齐字段类型、枚举、Cassandra 物理表、模块函数和阈值。规则已用 A 的交接快照（`wikipulse_bc_handoff_20261013_0800_compact`，Delta version 0，事件时间 2026-10-12 21:48:50 至 10-13 05:59:59 UTC）核对，核对结果见文末。`events.py`、`store.py` 和基线批处理已实现并实测（见 [C 运行手册](wikipulse_c_runbook.md)）；看板尚待验证。
+更新：2026-10-13。v1 的逻辑口径不变，本版补齐字段类型、枚举、Cassandra 物理表、模块函数和阈值。规则已用 A 的交接快照（`wikipulse_bc_handoff_20261013_0800_compact`，Delta version 0，事件时间 2026-10-12 21:48:50 至 10-13 05:59:59 UTC）核对，核对结果见文末。`events.py`、`store.py`、基线批处理和看板已实现并实测（见 [C 运行手册](wikipulse_c_runbook.md)）。
 
 ## 职责与调用关系
 
@@ -34,7 +34,7 @@ B：实时计算 → 调用 C 的写入模块 → Cassandra → C：看板
 
 ### 范围与去重
 
-`analysis_events(frame)` = 解析 → 范围过滤 → 去重，是批流的统一入口：
+`analysis_events(frame)` = 解析 → 范围过滤 → 去重，是批流的统一入口；`analysis_rows(frame)` 只做前两步，供需要看到重复副本的计算使用（如 C 的延迟实验：流侧水位线在去重之前推进）：
 
 - 范围：`server_name` 以 `.wikipedia.org` 结尾、`type ∈ {edit,new}`、`namespace = 0`，且 `source_id`、`event_time`、`wiki`、`title` 非空。
 - 去重键 `source_id`。批处理 `dropDuplicates`；流处理先 `withWatermark("event_time", "2 minutes")` 再 `dropDuplicatesWithinWatermark`。B 的后续窗口聚合沿用这一 watermark，不再另设。
@@ -151,9 +151,9 @@ C 的生成规则如下：
 
 ## 待定与验收
 
-- Cassandra 写入方式：spark-cassandra-connector 截至 2026-10 没有 Spark 4 正式版（最新 3.5.1 只支持 Spark 3.5），因此 `store` 在 driver 端用 Python `cassandra-driver` 3.30.1 执行 prepared INSERT。已在宿主机（Windows）和 `spark-client` 容器（Linux，经主机名 `cassandra`）实测写入、重复写覆盖、UTC `day` 和基线读取。B 的 `foreachBatch` 端到端调用待 B 的作业联调。
-- 看板：先试 Grafana 12.x 加 `hadesarchitect-cassandra-datasource` 3.3.0（社区签名，用 `GF_PLUGINS_PREINSTALL` 安装）。该插件的时序查询须命中分区键，并用 `$__timeFrom`/`$__timeTo` 过滤聚簇的时间列；上表主键已按此设计。插件不可用时改用 Streamlit。
-- 性能实验的延迟起点和终点、吞吐指标：由 C 在实验设计中确定。
+- Cassandra 写入方式：spark-cassandra-connector 截至 2026-10 没有 Spark 4 正式版（最新 3.5.1 只支持 Spark 3.5），因此 `store` 在 driver 端用 Python `cassandra-driver` 3.30.1 执行 prepared INSERT。已在宿主机（Windows）和 `spark-client` 容器（Linux，经主机名 `cassandra`）实测写入、重复写覆盖、UTC `day` 和基线读取。2026-10-24 已在 Compose 中经 B 的 `foreachBatch` 端到端写入实时 keyspace，并通过重启恢复检查（见 [C 运行手册](wikipulse_c_runbook.md)）。
+- 看板：采用 Grafana 12.2 加 `hadesarchitect-cassandra-datasource` 3.3.0（用 `GF_PLUGINS_PREINSTALL` 安装，随 Compose 预置），未启用 Streamlit 备选。查询都命中分区键，并用 `$__timeFrom`/`$__timeTo` 过滤聚簇的时间列；插件按首列拆分结果帧、把空值显示为 0，处理方式见 C 运行手册。
+- 性能实验的延迟起点和终点、吞吐指标：C 已确定。延迟起点是事件时间首次越过 `window_end` + 2 分钟的那条回放事件的 Kafka 写入时间（即窗口可以关闭的时刻），终点是 Cassandra `written_at`；吞吐是 activity 查询的输入行数除以其忙碌时长。详见 C 运行手册。
 - 验收要求：
   - 用同一小样本核对批流的过滤、去重、回退、5 分钟边界和 bot/human 计数；
   - 核对缺基线、低样本、零标准差的状态；
