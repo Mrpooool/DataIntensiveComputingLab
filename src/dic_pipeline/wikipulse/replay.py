@@ -33,8 +33,14 @@ def _replay_headers(row, run_id: str, version: int) -> list[tuple[str, bytes]]:
 
 def replay(spark: SparkSession, archive_path: str, version: int, bootstrap: str,
            topic: str, run_id: str, events_per_second: float,
-           limit: int | None = None) -> dict:
-    """Send exactly one archived Kafka row per rate slot in stable archive order."""
+           limit: int | None = None, from_event_unix: int | None = None) -> dict:
+    """Send exactly one archived Kafka row per rate slot in stable archive order.
+
+    With ``from_event_unix`` the replay starts at that source event time and follows
+    event-time order instead. A backfill archive is in fetch order, in which one data
+    centre's events can run days ahead of the other's and would push the watermark
+    past everything else; rows without an event time are skipped in this mode.
+    """
     try:
         valid_rate = math.isfinite(events_per_second) and events_per_second > 0
     except (TypeError, ValueError):
@@ -48,8 +54,12 @@ def replay(spark: SparkSession, archive_path: str, version: int, bootstrap: str,
     history = DeltaTable.forPath(spark, archive_path).history()
     if not history.where(F.col("version") == version).limit(1).count():
         raise ValueError(f"Delta version {version} is unavailable")
-    frame = (spark.read.format("delta").option("versionAsOf", version).load(archive_path)
-             .orderBy("kafka_timestamp_utc", "kafka_topic", "kafka_partition", "kafka_offset"))
+    frame = spark.read.format("delta").option("versionAsOf", version).load(archive_path)
+    order = ["kafka_timestamp_utc", "kafka_topic", "kafka_partition", "kafka_offset"]
+    if from_event_unix is not None:
+        frame = frame.where(F.col("source_event_unix") >= from_event_unix)
+        order.insert(0, "source_event_unix")
+    frame = frame.orderBy(*order)
     if limit is not None:
         frame = frame.limit(limit)
     count = frame.count()
@@ -83,7 +93,8 @@ def replay(spark: SparkSession, archive_path: str, version: int, bootstrap: str,
         producer.close()
     result = {"run_id": run_id, "archive_path": archive_path, "archive_version": version,
               "target_topic": topic, "source_rows": count, "sent": sent,
-              "rate_events_per_second": events_per_second, "started_at_utc": started,
+              "rate_events_per_second": events_per_second, "from_event_unix": from_event_unix,
+              "started_at_utc": started,
               "finished_at_utc": datetime.now(timezone.utc).isoformat()}
     print(json.dumps(result, sort_keys=True))
     return result
