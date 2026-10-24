@@ -103,7 +103,8 @@ def run(spark: SparkSession, archive_path: str, archive_version: int, *,
         hosts: str = store.DEFAULT_HOSTS) -> dict:
     """Build and publish one baseline version from a pinned archive version."""
     raw = spark.read.format("delta").option("versionAsOf", archive_version).load(archive_path)
-    events = analysis_events(raw).cache()
+    # parse_events keeps the raw payload columns; caching them for a week of history runs out of memory.
+    events = analysis_events(raw).select("wiki", "event_time", "is_revert").cache()
     start, end = history_bounds(events, history_end)
     gaps = collection_gaps(raw, start, end)
     windows = covered_windows(start, end, gaps)
