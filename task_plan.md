@@ -32,7 +32,7 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 
 ### Phase 1：契约与技术最小验证
 
-**Status:** in_progress
+**Status:** complete
 
 - [x] 确认 A 数据接入/集成、B 流处理、C 批处理/结果存储/展示的分工。
 - [x] 确认 [B/C 第一版逻辑接口](docs/wikipulse_bc_contract.md)：C 提供读写模块、B 调用；只展示完成窗口，基线按版本固定并通过受控重启切换。
@@ -41,48 +41,49 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 - [x] 固定 UTC、左闭右开窗口、整点对齐的 5 分钟窗口，以及批流复用公共解析/过滤/回退识别规则。
 - [x] 编辑战 30 分钟窗口、5 分钟步长，交替为 A → 他人 → A；热榜排除机器人编辑；回退关键词按 Unicode 词边界、六语言并集（sv 未实测）。
 - [x] 异常检测只用 5 分钟计数，不引入回退率；无基线/低样本/零标准差各有 `status`；采集缺口按原始事件时间 > 60 秒判定；迟到超过 2 分钟 watermark 丢弃。
-- [ ] 验证 Docker Compose 下 Spark/Kafka/HDFS/Delta/Cassandra 的兼容版本和内存预算；验证 Cassandra 到 Grafana 的最小查询，必要时采用 proposal 允许的展示备选。
+- [x] 验证 Docker Compose 下 Spark/Kafka/HDFS/Delta/Cassandra 的兼容版本和内存预算；Grafana 12.2 + Cassandra 插件 3.3.0 可用，未启用 Streamlit 备选。多日批处理需在 `spark-client` 以 local 模式加大内存运行（见 C 运行手册）。
 - [x] 用小夹具验证 distinct editor 统计、每语言 Top-N、状态窗口和 Cassandra 幂等写入；B 的四表流式写入已按冻结接口联调。
 - [x] 形成 WikiPulse 专属 B/C 契约，并在实现确定后同步 README、B/C 运行手册和项目进度。
 
 ### Phase 2：采集、归档与最小端到端（A 牵头集成）
 
-**Status:** in_progress
+**Status:** complete
 
 - [x] 实现 SSE producer、Kafka topic/key、连接重试与恢复策略；保留原始事件，记录采集覆盖时间、数量和可观察的缺口。
 - [x] Kafka 原始事件落 HDFS，定义路径/分区、checkpoint 和批次元数据；为 Delta 分区裁剪实验准备明确的 Delta 表。
 - [x] A 链路小样本验收：真实事件从 producer 到 Kafka、Spark/HDFS Delta；坏 JSON 保留、checkpoint 恢复和固定版本回放核对通过。
-- [ ] B/C 链路验收：事件经实时分析写入 Cassandra 并展示到看板；重复事件等跨模块行为仍需联调。
-- [ ] 尽早开始积累历史数据，测量原始流量、Wikipedia 文章编辑占比、存储增长；历史不足时不宣称异常基线可靠。
+- [x] B/C 链路验收（2026-10-24）：实时事件经 B 的作业写入 Cassandra 四表并在看板展示；杀掉驱动后从 checkpoint 重启，窗口连续、无重复。
+- [x] C 从 EventStreams 补拉 7 天历史（Delta version 348，20,398,815 行，与 Kafka offset 一致；每天约 2.9 M 条，Wikipedia 项目 28.9%、文章编辑 11.9%，16.6 GiB）。
 
 ### Phase 3：四类分析与历史基线
 
-**Status:** in_progress
+**Status:** complete
 
 - [x] B 完成流侧解析/过滤和 `bytes_changed`、`is_revert`，实现热榜、编辑战候选、实时 bot/human 指标，并只发布 watermark 已关闭的窗口。
-- [x] C 的批处理生成与流侧一致的 5 分钟指标，再按 wiki/日内小时计算均值、样本标准差和样本数，保存不可变基线版本；热力图展示仍待 C 完成。
+- [x] C 的批处理生成与流侧一致的 5 分钟指标，再按 wiki/日内小时计算均值、样本标准差和样本数，保存不可变基线版本；7 天归档上的基线 `20261023T1200Z` 无缺口、每格 72 个样本，看板含基线热力图。
 - [x] B 的流任务启动时固定读取 C 的已发布基线，按 `z-score > 3` 检测异常；新版本通过受控重启切换。
 - [x] C 的 Cassandra 表和幂等写入接口已由 B 的 `foreachBatch` 调用；实时与回放使用隔离的 keyspace/checkpoint。
 - [x] 小夹具核对交替回退、bot 过滤、Top-N 并列顺序、全部语言活动、无基线/低样本/零方差状态；文件流到 Cassandra 四表联调通过。
-- [ ] 用 A 的固定 Kafka 回放完成 checkpoint 重启、超过 watermark 的迟到事件和批流结果一致性验收。
+- [x] 固定 Kafka 回放的批流一致性：198/198 个完成窗口、8,821 次编辑一致；checkpoint 重启在实时链路上验证。按事件时间顺序回放不产生超过 watermark 的迟到事件，迟到丢弃行为只由 B 的夹具测试覆盖。
 
 ### Phase 4：可重复实验与展示
 
-**Status:** in_progress
+**Status:** complete
 
 - [x] A 提供回放工具，C 组织实验；固定同一归档输入，按受控速率（含高于自然流量）重放 Kafka；记录版本、数据量、Kafka 分区数和 trigger interval。
-- [x] 明确回放 event time、水位线推进和尾部窗口规则：不注入假事件，只比较 `window_end ≤ max(event_time) − 2 minutes` 的完成窗口；性能实验的延迟起终点仍由 C 固定。
-- [ ] C 负责性能实验，B 提供流处理指标，A 支持回放与环境；比较吞吐、端到端延迟及积压，建议报告 p50/p95，并标注运行资源、预热、重复次数和异常/丢失计数。
+- [x] 明确回放 event time、水位线推进和尾部窗口规则：不注入假事件，只比较 `window_end ≤ max(event_time) − 2 minutes` 的完成窗口；延迟起点为窗口可关闭时刻（事件时间首次越过 `window_end` + 2 分钟的回放事件的 Kafka 时间），终点为 Cassandra `written_at`。
+- [x] C 完成性能实验：同一 5 万行切片，速率 100/200/400、trigger 5/30 秒、分区 1/3，各 2 次，另加 2 次排空吞吐。全部配置都跟得上；trigger 决定延迟（5–10 秒约 18 秒，30 秒约 50 秒），分区数无可测影响，最大吞吐约 634–737 条/秒。实时瓶颈是 producer 逐条确认（约 32 条/秒）。
 - [x] B 在 8.2 小时固定快照上完成编辑战候选人工评估：24 个重叠窗口折叠为全部 4 个候选页面，按实质内容争议口径标注 1 个正例、3 个反破坏/傀儡清理负例，precision 为 25%；扩大样本留待多日回放。
-- [ ] C 对同一批任务比较 Delta 分区裁剪开/关的耗时与扫描范围，保证查询输出相同。
-- [ ] C 的看板完成热门条目、潜在编辑战、bot/human 比例和语言活动热力图；第一版只展示已完成窗口，明确窗口时间及等待语义。
+- [x] C 完成分区裁剪实验：按事件日期分区的副本上，同一一天 5 分钟计数任务输出一致；读取文件 292 对 4,580（−94%），耗时中位数 51.4 对 60.9 秒（−16%）。
+- [x] C 的看板完成热门条目、潜在编辑战、bot/human 比例、语言占比、基线与活动热力图和异常；只展示已完成窗口，时间轴为 UTC。
+- [x] C 在 7 天归档上扩大编辑战样本：209 个候选页面随机抽 50 个，precision 19.5%（8/41，Wilson 95% 区间 10–34%），见 [抽样记录](docs/wikipulse_c_edit_war_sample.md)。
 
 ### Phase 5：最终交付
 
-**Status:** pending
+**Status:** in_progress
 
-- [ ] 交付 producer、Spark 流/批作业、Cassandra Schema、Docker Compose、Grafana 看板（或说明采用的备选）。
-- [ ] C 汇总 **2 页报告**，A 汇总 README 运行说明；各人提供自己模块的说明和实测结果，覆盖启动、采集、批基线、重放、实验复现、停止与数据保留。
+- [x] 交付 producer、Spark 流/批作业、Cassandra Schema、Docker Compose、Grafana 看板。
+- [ ] C 汇总 **2 页报告**（C 部分已完成：[报告](docs/wikipulse_final_report.md)，PDF 2 页；README 运行说明待 A 汇总），A 汇总 README 运行说明；各人提供自己模块的说明和实测结果，覆盖启动、采集、批基线、重放、实验复现、停止与数据保留。
 - [ ] A 牵头、B/C 配合，在独立输出目录验收完整链路、重启恢复和复现实验；记录实测限制，保留 W1–W4 已交付内容。
 
 ## 已确认分工
