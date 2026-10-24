@@ -104,12 +104,18 @@ def save_state(path: Path, event_id: str) -> None:
 
 def capture(bootstrap: str, topic: str, state_path: Path, *,
             stream_url: str = STREAM_URL, stats_interval: int = 60,
-            max_events: int | None = None) -> None:
-    """Capture all project events; reconnect with the last Kafka-acked SSE ID."""
+            max_events: int | None = None, ack_every: int = 1) -> None:
+    """Capture all project events; reconnect with the last Kafka-acked SSE ID.
+
+    ``ack_every`` > 1 waits for Kafka acknowledgements in groups and saves the SSE ID
+    only after the whole group is acknowledged, which a backfill needs for speed.
+    """
     if not topic:
         raise ValueError("topic must be nonempty")
     if stats_interval < 0 or (max_events is not None and max_events < 0):
         raise ValueError("stats_interval and max_events must be nonnegative")
+    if ack_every < 1:
+        raise ValueError("ack_every must be positive")
     producer = KafkaProducer(
         bootstrap_servers=bootstrap.split(","), acks="all", retries=10,
         max_in_flight_requests_per_connection=1, linger_ms=20,
@@ -120,6 +126,19 @@ def capture(bootstrap: str, topic: str, state_path: Path, *,
     started = utc_now()
     last_report = time.monotonic()
     backoff = 1.0
+    pending: list = []
+    pending_id: str | None = None
+
+    def acknowledge() -> None:
+        nonlocal last_event_id, pending_id
+        for future in pending:
+            future.get(timeout=60)
+        pending.clear()
+        if pending_id:
+            save_state(state_path, pending_id)
+            last_event_id = pending_id
+            pending_id = None
+
     try:
         while max_events is None or counters["published"] < max_events:
             headers = {"Accept": "text/event-stream", "User-Agent": "WikiPulse/1.0 (course project)"}
@@ -130,7 +149,7 @@ def capture(bootstrap: str, topic: str, state_path: Path, *,
                     response.raise_for_status()
                     LOG.info("connected last_event_id=%s at=%s", last_event_id, utc_now())
                     backoff = 1.0
-                    for sse_id, sse_type, raw in sse_events(response.iter_lines()):
+                    for sse_id, sse_type, raw in sse_events(response.iter_lines(chunk_size=65536)):
                         key, source_id, event_time, valid_json = event_key(raw)
                         if not valid_json:
                             counters["bad_json"] += 1
@@ -142,22 +161,25 @@ def capture(bootstrap: str, topic: str, state_path: Path, *,
                             ("source_event_unix", ("" if event_time is None else str(event_time)).encode("ascii")),
                             ("received_at_utc", received_at.encode("ascii")),
                         ]
-                        producer.send(topic, key=key, value=raw, headers=metadata).get(timeout=60)
+                        pending.append(producer.send(topic, key=key, value=raw, headers=metadata))
+                        if sse_id:
+                            pending_id = sse_id
+                        if len(pending) >= ack_every:
+                            acknowledge()
                         counters["published"] += 1
                         if event_time is not None:
                             if counters["first_source_event_unix"] is None:
                                 counters["first_source_event_unix"] = event_time
                             counters["last_source_event_unix"] = event_time
-                        if sse_id:
-                            save_state(state_path, sse_id)
-                            last_event_id = sse_id
                         if time.monotonic() - last_report >= stats_interval:
                             LOG.info("stats %s", json.dumps({**counters, "started_at_utc": started,
                                 "reported_at_utc": utc_now(), "last_sse_id": last_event_id}))
                             last_report = time.monotonic()
                         if max_events is not None and counters["published"] >= max_events:
                             break
+                acknowledge()
             except (requests.RequestException, TimeoutError, OSError) as exc:
+                acknowledge()
                 LOG.warning("stream interrupted at=%s last_event_id=%s error=%s",
                             utc_now(), last_event_id, exc)
             if max_events is not None and counters["published"] >= max_events:
@@ -166,6 +188,7 @@ def capture(bootstrap: str, topic: str, state_path: Path, *,
             time.sleep(min(backoff, 60.0) + random.uniform(0, 0.5))
             backoff = min(backoff * 2, 60.0)
     finally:
+        acknowledge()
         LOG.info("final stats %s", json.dumps({**counters, "started_at_utc": started,
             "stopped_at_utc": utc_now(), "last_sse_id": last_event_id}))
         producer.flush(timeout=60)

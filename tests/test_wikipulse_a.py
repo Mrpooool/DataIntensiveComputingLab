@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from kafka.errors import KafkaTimeoutError
 from pyspark.sql import Row
 
 from dic_pipeline.ingestion import create_spark
@@ -59,6 +60,27 @@ class ProducerTests(unittest.TestCase):
         first_headers = dict(producer.send.call_args_list[0].kwargs["headers"])
         self.assertEqual(first_headers["source_event_unix"], b"0")
         self.assertEqual(producer.send.call_count, 2)
+
+    def test_grouped_ack_saves_no_id_when_a_send_fails(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_lines.return_value = [
+            b"id: first", b'data: {"meta":{"id":"source-1"}}', b"",
+            b"id: second", b'data: {"meta":{"id":"source-2"}}', b"",
+        ]
+        failed = MagicMock()
+        failed.get.side_effect = KafkaTimeoutError("not acknowledged")
+        producer = MagicMock()
+        producer.send.side_effect = [MagicMock(), failed]
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("dic_pipeline.wikipulse.producer.KafkaProducer", return_value=producer), \
+                patch("dic_pipeline.wikipulse.producer.requests.get", return_value=response):
+            from dic_pipeline.wikipulse.producer import capture
+
+            with self.assertRaises(KafkaTimeoutError):
+                capture("localhost:9092", "wikipulse.raw.backfill", Path(tmp) / "state.json",
+                        stream_url="https://example.invalid/events", max_events=2, ack_every=2)
+            self.assertIsNone(load_state(Path(tmp) / "state.json"))
 
     def test_state_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
