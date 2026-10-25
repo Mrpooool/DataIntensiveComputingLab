@@ -1,0 +1,845 @@
+{
+  "uid": "wikipulse",
+  "title": "WikiPulse",
+  "tags": [
+    "wikipulse"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "description": "Completed windows only: every row was written after the 2-minute event-time watermark closed it.",
+  "templating": {
+    "list": [
+      {
+        "name": "keyspace",
+        "label": "Keyspace",
+        "type": "query",
+        "datasource": {
+          "type": "hadesarchitect-cassandra-datasource",
+          "uid": "wikipulse-cassandra"
+        },
+        "query": {
+          "query": "SELECT keyspace_name FROM system_schema.keyspaces"
+        },
+        "definition": "SELECT keyspace_name FROM system_schema.keyspaces",
+        "refresh": 1,
+        "sort": 1,
+        "regex": "/^wikipulse/",
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "day",
+        "label": "UTC day",
+        "type": "query",
+        "datasource": {
+          "type": "hadesarchitect-cassandra-datasource",
+          "uid": "wikipulse-cassandra"
+        },
+        "query": {
+          "query": "SELECT DISTINCT day FROM ${keyspace}.activity_5m"
+        },
+        "definition": "SELECT DISTINCT day FROM ${keyspace}.activity_5m",
+        "refresh": 1,
+        "sort": 2,
+        "regex": "/^(\\d{4}-\\d{2}-\\d{2})/",
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "wiki",
+        "label": "Wiki",
+        "type": "custom",
+        "query": "enwiki,dewiki,frwiki,zhwiki,svwiki,jawiki",
+        "current": {
+          "text": "enwiki",
+          "value": "enwiki"
+        },
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "baseline",
+        "label": "Baseline version",
+        "type": "query",
+        "datasource": {
+          "type": "hadesarchitect-cassandra-datasource",
+          "uid": "wikipulse-cassandra"
+        },
+        "query": {
+          "query": "SELECT baseline_version FROM wikipulse.baseline_versions"
+        },
+        "definition": "SELECT baseline_version FROM wikipulse.baseline_versions",
+        "refresh": 1,
+        "sort": 2,
+        "regex": "",
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Hot pages - latest completed 10-minute window",
+      "description": "Top 10 non-bot pages of the selected wiki in the newest closed window (10 min, sliding 1 min). A window appears only after the 2-minute watermark passes window_end.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, rank, title, edit_count, distinct_editors, score, window_start, window_end FROM ${keyspace}.hot_pages WHERE wiki = '${wiki}' AND day = '${day}' LIMIT 10"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "wiki": true,
+              "window_start": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "title"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 260
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Edit-war candidates - latest window per page",
+      "description": "Pages with at least 3 non-bot reverts by 2+ users and an A -> other -> A sequence in a 30-minute window (sliding 5 min). Overlapping windows are collapsed to the newest one per page.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT title, window_end, revert_count, distinct_nonbot_editors, user_switches, reverter_sequence, last_revert_at FROM ${keyspace}.edit_war_candidates WHERE wiki = '${wiki}' AND day = '${day}'"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "title": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "window_end": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              },
+              "revert_count": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              },
+              "distinct_nonbot_editors": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              },
+              "user_switches": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              },
+              "reverter_sequence": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              },
+              "last_revert_at": {
+                "aggregations": [
+                  "first"
+                ],
+                "operation": "aggregate"
+              }
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "window_end (first)",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Bot vs human edits per 5 minutes",
+      "description": "Completed 5-minute windows of the selected wiki, stacked; bot_count + human_count = edit_count.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, bot_count, human_count, window_end FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki = '${wiki}' AND window_start >= $__timeFrom AND window_start < $__timeTo"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "fillOpacity": 60,
+            "drawStyle": "bars"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Bot share of edits",
+      "description": "bot_count / (bot_count + human_count) per completed 5-minute window of the selected wiki.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, bot_count, human_count, window_end FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki = '${wiki}' AND window_start >= $__timeFrom AND window_start < $__timeTo"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "reduceRow",
+            "alias": "total",
+            "reduce": {
+              "include": [
+                "bot_count",
+                "human_count"
+              ],
+              "reducer": "sum"
+            }
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "binary",
+            "alias": "bot share",
+            "binary": {
+              "left": "bot_count",
+              "operator": "/",
+              "right": "total"
+            },
+            "replaceFields": true
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Edits per 5 minutes - focus wikis",
+      "description": "Completed 5-minute edit counts for the six focus Wikipedia editions.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, edit_count, window_end FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki') AND window_start >= $__timeFrom AND window_start < $__timeTo"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "Language share of edits on the selected day",
+      "description": "Share of completed-window edits per Wikipedia edition (all editions), top 15.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 18,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, edit_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}'"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "wiki": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "edit_count": {
+                "aggregations": [
+                  "sum"
+                ],
+                "operation": "aggregate"
+              }
+            }
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "mode": "unary",
+            "alias": "share",
+            "unary": {
+              "operator": "percent",
+              "fieldName": "edit_count (sum)"
+            },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "edit_count (sum)",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 15
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {
+                "fieldName": "wiki",
+                "handlerKey": "field.name"
+              },
+              {
+                "fieldName": "share",
+                "handlerKey": "field.value"
+              },
+              {
+                "fieldName": "edit_count (sum)",
+                "handlerKey": "__ignore"
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 1
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Language activity heatmap - baseline mean edits per 5 minutes by UTC hour",
+      "description": "Batch baseline (selected version): mean 5-minute edit count per wiki and UTC hour of day, computed from the pinned raw archive.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, hour_of_day, edit_mean FROM wikipulse.baseline_by_hour WHERE baseline_version = '${baseline}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki','eswiki','ruwiki','itwiki','ptwiki','plwiki','nlwiki','arwiki','fawiki','ukwiki','kowiki','viwiki','idwiki','trwiki','hewiki')"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "hour_of_day",
+            "rowField": "wiki",
+            "valueField": "edit_mean"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "color": {
+            "mode": "continuous-BlYlRd"
+          },
+          "custom": {
+            "cellOptions": {
+              "type": "color-background",
+              "mode": "gradient"
+            },
+            "align": "center",
+            "minWidth": 40
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wiki\\hour_of_day"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "wiki \\ UTC hour"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Anomaly status - latest window per wiki and metric",
+      "description": "z = (observed - baseline mean) / baseline std for the window's UTC hour; anomaly when z > 3. insufficient_samples, no_baseline and zero_std rows are not detections; their z-score is null, which the Cassandra plugin would render as 0, so it is shown only for detections.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, metric, window_end, observed_count, status FROM ${keyspace}.anomalies WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki')"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "wiki": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "metric": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "window_end": {
+                "aggregations": [
+                  "last"
+                ],
+                "operation": "aggregate"
+              },
+              "observed_count": {
+                "aggregations": [
+                  "last"
+                ],
+                "operation": "aggregate"
+              },
+              "status": {
+                "aggregations": [
+                  "last"
+                ],
+                "operation": "aggregate"
+              }
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Detected anomalies on the selected day",
+      "description": "Rows with is_anomaly = true for the focus wikis.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 38,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, metric, window_end, observed_count, z_score, is_anomaly, baseline_version FROM ${keyspace}.anomalies WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki')"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "include",
+            "match": "any",
+            "filters": [
+              {
+                "fieldName": "is_anomaly",
+                "config": {
+                  "id": "equal",
+                  "options": {
+                    "value": true
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "window_end",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "status-history",
+      "title": "Activity heatmap - edits per 5 minutes, focus wikis",
+      "description": "Completed 5-minute windows; the time axis is UTC, so a 24-hour range shows hour-of-day patterns.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, edit_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki') AND window_start >= $__timeFrom AND window_start < $__timeTo"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "wiki": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "colWidth": 1,
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "continuous-BlYlRd"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "status-history",
+      "title": "Bot activity heatmap - bot edits per 5 minutes, focus wikis",
+      "description": "bot_count per completed 5-minute window; read it against the activity heatmap on the left.",
+      "datasource": {
+        "type": "hadesarchitect-cassandra-datasource",
+        "uid": "wikipulse-cassandra"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "hadesarchitect-cassandra-datasource",
+            "uid": "wikipulse-cassandra"
+          },
+          "queryType": "query",
+          "rawQuery": true,
+          "target": "SELECT wiki, bot_count, window_start FROM ${keyspace}.activity_5m WHERE day = '${day}' AND wiki IN ('enwiki','dewiki','frwiki','zhwiki','svwiki','jawiki') AND window_start >= $__timeFrom AND window_start < $__timeTo"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "wiki": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "colWidth": 1,
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "continuous-BlYlRd"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

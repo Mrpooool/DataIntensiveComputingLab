@@ -28,7 +28,10 @@ def main() -> None:
     spark.sparkContext.setLogLevel("WARN")
     try:
         raw = spark.read.format("delta").option("versionAsOf", args.version).load(args.archive)
-        events = analysis_events(raw).cache()
+        # Cache only what the candidates and evidence need; the raw payload columns do
+        # not fit in memory for a multi-day archive.
+        events = analysis_events(raw).select("wiki", "title", "event_time", "revision_new", "user",
+                                             "comment", "is_revert", "is_bot").cache()
         max_event = events.select(F.max("event_time")).first()[0]
         if max_event is None:
             raise ValueError("archive has no analysable events")

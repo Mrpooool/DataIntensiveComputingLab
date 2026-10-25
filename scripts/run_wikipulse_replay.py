@@ -2,6 +2,7 @@
 
 import argparse
 import math
+from datetime import datetime
 
 from dic_pipeline.wikipulse.archive import spark_session
 from dic_pipeline.wikipulse.replay import replay
@@ -16,6 +17,8 @@ def main() -> None:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--rate", required=True, type=float)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--from-event-time", type=datetime.fromisoformat,
+                        help="start at this UTC event time and replay in event-time order (backfills)")
     args = parser.parse_args()
     if args.topic == "wikipulse.raw.live":
         parser.error("replay target must differ from live topic")
@@ -26,7 +29,8 @@ def main() -> None:
     spark = spark_session("WikiPulse fixed replay")
     try:
         replay(spark, args.archive, args.version, args.bootstrap, args.topic,
-               args.run_id, args.rate, args.limit)
+               args.run_id, args.rate, args.limit,
+               int(args.from_event_time.timestamp()) if args.from_event_time else None)
     finally:
         spark.stop()
 

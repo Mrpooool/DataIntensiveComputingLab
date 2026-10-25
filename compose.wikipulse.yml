@@ -60,6 +60,22 @@ services:
     volumes:
       - cassandra-data:/var/lib/cassandra
 
+  grafana:
+    image: grafana/grafana:12.2.0
+    environment:
+      GF_PLUGINS_PREINSTALL: hadesarchitect-cassandra-datasource@3.3.0
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/wikipulse.json
+    depends_on:
+      - cassandra
+    ports:
+      - "3000:3000"
+    mem_limit: 512m
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
   spark-master:
     build:
       context: .
