@@ -1,6 +1,6 @@
 # WikiPulse 角色 A：职责、实现与后续工作
 
-更新：2026-10-13。本文只讨论 Final Project：WikiPulse。W1–W4 的 Taxi 代码、数据和测试与本项目独立，WikiPulse 业务代码位于 `src/dic_pipeline/wikipulse/`。
+更新：2026-10-13；第 4、5 节是当时的状态。B 的流分析、C 的基线、Cassandra 结果表、看板和实验已于 2026-10-24 完成，完整链路和重启恢复也已验证，当前状态见 [progress.md](../progress.md)，运行顺序见 [README](../README.md#running-wikipulse-end-to-end)。本文只讨论 Final Project：WikiPulse。W1–W4 的 Taxi 代码、数据和测试与本项目独立，WikiPulse 业务代码位于 `src/dic_pipeline/wikipulse/`。
 
 ## 1. A 负责什么
 
@@ -15,7 +15,7 @@
 | 归档检查 | `scripts/inspect_wikipulse_archive.py`、`scripts/send_wikipulse_fixture.py` | 检查总行数、物理 key 数、坏 JSON fixture、Wikipedia 子集数量及 Delta 版本；可注入一条坏 JSON 测试保留行为。 |
 | 固定版本限速回放 | `src/dic_pipeline/wikipulse/replay.py`、`scripts/run_wikipulse_replay.py` | 从指定 Delta 版本按 Kafka 时间和物理位置稳定排序，按给定速率写到独立 topic；保留原 key、payload、headers，附加回放来源字段并输出 manifest。 |
 | 回放核对 | `scripts/check_wikipulse_replay.py` | 对有限回放逐条比对 payload、key、原始 headers 和来源位置，发现丢失、重复或内容变化则失败。 |
-| 运行环境与契约 | `compose.wikipulse.yml`、`docker/wikipulse-spark.Dockerfile`、`requirements-wikipulse.txt`、`docs/wikipulse_a_contract.md`、`docs/wikipulse_a_runbook.md` | 配置 Kafka、Spark master/worker/client、HDFS NameNode/DataNode、Cassandra 基础服务；记录输入字段、保留策略和操作命令。Cassandra 目前只是服务容器，尚无结果表或看板。 |
+| 运行环境与契约 | `compose.wikipulse.yml`、`docker/wikipulse-spark.Dockerfile`、`requirements-wikipulse.txt`、`docs/wikipulse_a_contract.md`、`docs/wikipulse_a_runbook.md` | 配置 Kafka、Spark master/worker/client、HDFS NameNode/DataNode、Cassandra 基础服务；记录输入字段、保留策略和操作命令。Cassandra 结果表和 Grafana 看板由 C 提供。 |
 
 原始层的物理记录键是 `(kafka_topic, kafka_partition, kafka_offset)`；`source_id` 是分析侧优先考虑的逻辑去重键。生产者和归档支持至少一次处理，不保证跨 SSE、Kafka、Spark 的端到端 exactly-once。SSE 状态只表示最后确认的 ID，Wikimedia 的恢复能力和长时间断线后的缺口仍需按日志评估。字段细节见 [A 输入契约](wikipulse_a_contract.md)。
 
@@ -27,11 +27,11 @@ Wikimedia EventStreams / recentchange
     v
 A: Python SSE producer --原始 data + 来源 headers--> Kafka: wikipulse.raw.live
     |                                                    |
-    | 本地状态文件                                         +--> B: 流解析、过滤、去重与实时分析 [待实现]
+    | 本地状态文件                                         +--> B: 流解析、过滤、去重与实时分析
     |                                                           |
     v                                                           v
-data/wikipulse/producer_A.json                            C: Cassandra 结果表 [待实现]
-                                                         --> C: 看板 [待实现]
+data/wikipulse/producer_A.json                            C: Cassandra 结果表
+                                                         --> C: Grafana 看板
 
 Kafka: wikipulse.raw.live
     |
@@ -40,16 +40,16 @@ A: Spark Structured Streaming 原始归档
     |
     +--> HDFS Delta: /wikipulse/raw_events
     |      checkpoint: /wikipulse/checkpoints/raw_live
-    |      +--> C: Spark SQL 历史指标/基线 [待实现]
+    |      +--> C: Spark SQL 历史指标/基线
     |      +--> A: 固定 Delta 版本、可控速率回放
     |                  |
     |                  v
-    |             Kafka: 独立 replay topic --> B/C 实验链路 [待联调]
+    |             Kafka: 独立 replay topic --> B/C 实验链路
     |
     +--> 保留所有 Wikimedia 事件和坏 JSON；不在 A 层做 Wikipedia 分析过滤
 ```
 
-设计中的 B 分析范围是 `server_name` 以 `.wikipedia.org` 结尾、`type` 为 `edit/new`、`namespace=0` 的事件。B 负责流侧解析、过滤、回退识别、热门条目、编辑战候选、bot/human 指标及异常检测；C 使用相同规则做历史 5 分钟指标与基线，并提供 Cassandra 读写及展示。B/C 的第一版逻辑接口见 [B/C 契约](wikipulse_bc_contract.md)。上述 B/C 箭头表示计划中的数据流，不表示相应作业已经运行。
+设计中的 B 分析范围是 `server_name` 以 `.wikipedia.org` 结尾、`type` 为 `edit/new`、`namespace=0` 的事件。B 负责流侧解析、过滤、回退识别、热门条目、编辑战候选、bot/human 指标及异常检测；C 使用相同规则做历史 5 分钟指标与基线，并提供 Cassandra 读写及展示。B/C 的第一版逻辑接口见 [B/C 契约](wikipulse_bc_contract.md)。上述 B/C 部分已实现并联调。
 
 事件时间与 Kafka/接收时间用途不同：B/C 窗口应使用来源事件时间；A 的 `ingest_date_utc` 只用于归档分区。固定回放不改写原始事件时间，也不注入推进水位线的假事件。有限回放结束时的尾部窗口完成规则需要 B/C 在实验中确定。
 

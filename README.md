@@ -4,6 +4,48 @@
 
 The final project shares this repository but uses separate modules and data paths from Weeks 1-4. Role A's Wikimedia capture, HDFS/Delta raw archive, fixed replay, and Compose setup are documented in [the WikiPulse A runbook](docs/wikipulse_a_runbook.md) and [input/archive contract](docs/wikipulse_a_contract.md). Role B's completed-window Structured Streaming analytics are documented in [the B runbook](docs/wikipulse_b_runbook.md); their Cassandra handoff to role C follows the frozen [B/C contract](docs/wikipulse_bc_contract.md). Role C's baseline, Cassandra store, Grafana dashboard and experiments are documented in [the C runbook](docs/wikipulse_c_runbook.md), and the results are summarised in the [2-page final report](docs/wikipulse_final_report.md). The existing Taxi workflow below remains available.
 
+### Running WikiPulse end to end
+
+Docker Desktop needs at least 12 GiB for containers. All commands run from the repository root in PowerShell; the runbooks linked in each step have the details and options.
+
+1. Install the host dependencies and start the stack (Kafka, Spark, HDFS, Cassandra, Grafana), then create the live topic ([A runbook](docs/wikipulse_a_runbook.md)):
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -r requirements-wikipulse.txt
+   docker compose -f compose.wikipulse.yml build
+   docker compose -f compose.wikipulse.yml up -d
+   docker compose -f compose.wikipulse.yml exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic wikipulse.raw.live --partitions 3 --replication-factor 1
+   ```
+
+2. Start the raw archive in one terminal and the producer in another. On the host use `127.0.0.1:9092`, because `localhost` resolves to IPv6 first; grouped acknowledgements keep the producer ahead of the evening feed ([C runbook](docs/wikipulse_c_runbook.md#live-end-to-end-check-2026-10-24)):
+
+   ```powershell
+   docker compose -f compose.wikipulse.yml exec spark-client /usr/local/bin/spark-submit --master spark://spark-master:7077 --driver-memory 768m --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_2.13:4.4.0 scripts/run_wikipulse_archive.py
+   $env:PYTHONPATH = "src"
+   .\.venv\Scripts\python.exe -m scripts.run_wikipulse_producer --bootstrap 127.0.0.1:9092 --ack-every 100
+   ```
+
+3. Publish a baseline from a pinned Delta version of the archive (`scripts/inspect_wikipulse_archive.py` prints the version). Anomaly detection needs at least two days of history (24 samples per wiki and hour); with less, anomaly rows report `insufficient_samples`. The [C runbook](docs/wikipulse_c_runbook.md#baseline) has the command and the seven-day backfill used for the report's baseline `20261023T1200Z`.
+
+4. Start the streaming job with that baseline version ([B runbook](docs/wikipulse_b_runbook.md#live-run)). Its JSON lines report each completed micro-batch:
+
+   ```powershell
+   docker compose -f compose.wikipulse.yml exec spark-client /usr/local/bin/spark-submit --master spark://spark-master:7077 --driver-memory 768m --conf spark.sql.shuffle.partitions=8 --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_2.13:4.4.0 scripts/run_wikipulse_streaming.py --baseline-version <version>
+   ```
+
+5. Open the Grafana dashboard at `http://localhost:3000` (anonymous, read-only). Results appear once the 2-minute watermark closes the first windows ([C runbook](docs/wikipulse_c_runbook.md#dashboard)).
+
+6. Replays and experiments read a pinned archive version into a fresh topic and a separate `wikipulse_replay_<run_id>` keyspace, so they never touch the live results: [replay](docs/wikipulse_a_runbook.md), [isolated streaming replay](docs/wikipulse_b_runbook.md#isolated-replay), and the [performance, partition-pruning and consistency experiments](docs/wikipulse_c_runbook.md#experiments).
+
+7. To stop, interrupt the producer, archive and streaming jobs, then run `docker compose -f compose.wikipulse.yml stop`. Named volumes keep Kafka, HDFS and Cassandra data; `docker compose -f compose.wikipulse.yml down -v` deletes them.
+
+The unit tests need no Docker; the Cassandra tests are skipped unless Cassandra is reachable on `localhost`:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
+```
+
 A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation. Week 4 builds a zone-hour taxi demand dataset, a train-only feature pipeline and a reproducible, retrainable Spark ML training run, and compares preparing the data from the raw files with preparing it from the platform.
 
 ## Setup

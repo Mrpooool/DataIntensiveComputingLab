@@ -1,6 +1,6 @@
 # 项目执行方案
 
-更新：2026-10-13。当前任务依据：[WikiPulse proposal](proposal_fixed.pdf)（1 页）。[Assignment.md](Assignment.md) 对应的 W1–W4 已完成；现在进入 **Final Project：WikiPulse**，不将其称为 W5，也不延续 Taxi 预测作为新目标。
+更新：2026-10-25。当前任务依据：[WikiPulse proposal](proposal_fixed.pdf)（1 页）。[Assignment.md](Assignment.md) 对应的 W1–W4 已完成；现在进入 **Final Project：WikiPulse**，不将其称为 W5，也不延续 Taxi 预测作为新目标。
 
 ## 已完成基础
 
@@ -83,8 +83,9 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 **Status:** in_progress
 
 - [x] 交付 producer、Spark 流/批作业、Cassandra Schema、Docker Compose、Grafana 看板。
-- [ ] C 汇总 **2 页报告**（C 部分已完成：[报告](docs/wikipulse_final_report.md)，PDF 2 页；README 运行说明待 A 汇总），A 汇总 README 运行说明；各人提供自己模块的说明和实测结果，覆盖启动、采集、批基线、重放、实验复现、停止与数据保留。
-- [ ] A 牵头、B/C 配合，在独立输出目录验收完整链路、重启恢复和复现实验；记录实测限制，保留 W1–W4 已交付内容。
+- [x] C 完成 [2 页报告](docs/wikipulse_final_report.md)（附 PDF）；README 补齐完整运行顺序（启动、采集、基线、流作业、看板、回放与实验、停止与数据保留），各模块细节在 A/B/C 运行手册。
+- [x] 完整链路和重启恢复已在 2026-10-24 实测（见 Phase 2）；回放和实验写入独立的 topic、checkpoint 与 `wikipulse_replay_<run_id>` keyspace，命令和实测限制记录在 C 运行手册。W1–W4 交付内容保留。
+- [ ] 团队至少一人复核 C 的 50 页编辑战标注（目前为 AI 辅助单人标注，见 [抽样记录](docs/wikipulse_c_edit_war_sample.md)）。
 
 ## 已确认分工
 
@@ -96,18 +97,11 @@ W1–W3 已有 Spark/Delta 摄入、校验、整合、SQL、增量和评测经�
 
 各人负责自己组件的启动配置、测试、排障和模块说明。A 牵头集成，不承担替其他人完成模块实现的责任；不以“代码量最少”作为 A 工作量较轻的依据。
 
-## B/C 接口：第一版已确认
+## B/C 接口
 
-完整逻辑契约见 [WikiPulse B/C 接口 v1](docs/wikipulse_bc_contract.md)。
+完整契约见 [WikiPulse B/C 接口](docs/wikipulse_bc_contract.md)（v2 已冻结并按实现同步）。
 
-- C 负责建表、字段映射和读写模块；B 在流作业内调用，不新增交接服务。
-- B 输出热榜、编辑战候选、5 分钟活动和异常检测结果；第一版只输出完成窗口，使用稳定业务键覆盖重试结果。
-- C 提供按版本/wiki/UTC 日内小时组织的历史 5 分钟计数基线；B 启动固定版本，通过受控重启切换每日更新。
-- 无基线、低样本或零标准差时保留未检测状态；公共规则由 B 维护、C 复用。
-- 类型、Cassandra 物理表、函数签名、样本阈值、标准差定义和窗口算法细节待定；Phase 1 技术验证仍未完成。
-
-下一步细化契约并推进 Phase 1 的技术验证。proposal 未提供截止日期、采集天数或量化性能目标，暂不填造。
-
-本轮编辑问题：一次写入命令超过 Windows 命令行长度限制，进程未启动；已拆为归档和逐文件写入。
-
-分工更新时 PowerShell 内嵌 Python 引号解析失败，未写入文件；改用 apply_patch 完成。
+- C 负责建表、字段映射和读写模块（`store.py`）；B 在流作业的 `foreachBatch` 内调用，不新增交接服务。
+- B 输出热榜、编辑战候选、5 分钟活动和异常检测结果；只输出完成窗口，使用稳定业务键覆盖重试结果。
+- C 提供按版本/wiki/UTC 日内小时组织的历史 5 分钟计数基线；B 启动时固定版本，通过受控重启切换。
+- 无基线、低样本或零标准差时保留未检测状态；公共解析、过滤和回退规则在 C 维护的 `events.py` 中，批流共用。
