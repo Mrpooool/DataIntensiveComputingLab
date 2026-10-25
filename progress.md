@@ -112,3 +112,12 @@ A 完成训练集，B 完成特征/模型/再训练入口，C 完成联调修复
 - 按队友审核意见，在英文和中文 README 补齐 WikiPulse 完整运行顺序：启动 Compose、建 topic、归档与 producer、基线、流作业、看板、回放与实验、停止与数据保留，细节链接到 A/B/C 运行手册。
 - 更新过时状态：`task_plan.md` 的 Phase 5 和 B/C 接口小节、`docs/wikipulse_role_a_overview.md` 的数据流标注、中文 README 的角色 A 标题。
 - 宿主机 WikiPulse 单测 23 项通过、3 项跳过（Docker 未启动，Cassandra 不可达）。W1–W4 测试仍按文件在宿主机运行，不放进 2 GiB 的 `spark-client` 容器做全量回归。
+
+## 2026-10-25：WikiPulse 命名与过时文档清理
+
+- 将 `tests/test_wikipulse_a.py` 按测试内容拆成 `tests/test_wikipulse_producer.py` 与 `tests/test_wikipulse_archive.py`，与 `events`/`streaming`/`store`/`baseline` 的模块命名一致；删除角色字母文件名。
+- 同步更新 README / README-zh、`docs/wikipulse_a_runbook.md`、`docs/wikipulse_role_a_overview.md` 中的 unittest 命令。
+- 重写 `docs/wikipulse_role_a_overview.md`：去掉“完整链路尚未验证 / A 后续待办”等过时表述，改为已交付状态并指向 README 与 progress。
+- `findings.md` 标明为启动期决策日志，避免把 10-07 的“尚未实现”读成当前状态；补充后续已实测与 7 天基线的说明。
+- A runbook 末尾“仍需 B/C 才能端到端验收”改为指向已完成的 README 与 B/C runbook。
+- 验证：`tests.test_wikipulse_producer` 6 项通过。`tests.test_wikipulse_archive` 本机未跑通（当前环境无 JDK / `JAVA_HOME`，`.venv/Library` 下也无 java）；逻辑未改，仅从原文件拆出。

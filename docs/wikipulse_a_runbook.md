@@ -11,11 +11,11 @@ docker compose -f compose.wikipulse.yml exec kafka /opt/kafka/bin/kafka-topics.s
 docker compose -f compose.wikipulse.yml exec spark-client /usr/local/bin/spark-submit --master spark://spark-master:7077 --driver-memory 768m --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_2.13:4.4.0 scripts/run_wikipulse_archive.py
 ```
 
-Before using Docker, run the local role A smoke suite. It exercises SSE framing, key and timestamp extraction, acknowledged state persistence, and the Spark archive projection without reading the Taxi data:
+Before using Docker, run the local producer and archive smoke suites. They exercise SSE framing, key and timestamp extraction, acknowledged state persistence, and the Spark archive projection without reading the Taxi data:
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a -v
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_producer tests.test_wikipulse_archive -v
 ```
 
 Run archive in its own terminal. Install the WikiPulse dependencies in the host virtual environment, then start the producer in a second terminal:
@@ -59,7 +59,7 @@ To check malformed input, send one fixture to the live topic while the archive j
 docker compose -f compose.wikipulse.yml exec spark-client python scripts/send_wikipulse_fixture.py
 ```
 
-To stop, interrupt the producer and archive job, then run `docker compose -f compose.wikipulse.yml stop`. Named volumes keep Kafka, HDFS and Cassandra data across `stop`/`up`. `docker compose down -v` would delete them, so reserve it for deliberate disposal. Cassandra is provisioned for C's schemas; A does not create result tables. Full producer to dashboard acceptance requires B/C jobs and a running Docker daemon.
+To stop, interrupt the producer and archive job, then run `docker compose -f compose.wikipulse.yml stop`. Named volumes keep Kafka, HDFS and Cassandra data across `stop`/`up`. `docker compose down -v` would delete them, so reserve it for deliberate disposal. Cassandra is provisioned for C's schemas; A does not create result tables. End-to-end producer → analytics → Cassandra → dashboard steps are in the [README](../README.md#running-wikipulse-end-to-end); streaming and baseline details are in the [B](wikipulse_b_runbook.md) and [C](wikipulse_c_runbook.md) runbooks.
 
 ## 2026-10-07 A-chain smoke test
 

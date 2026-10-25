@@ -1,12 +1,12 @@
 # 项目发现与决策依据
 
-更新：2026-10-07。当前依据为 [WikiPulse proposal](proposal_fixed.pdf) 第 1 页；已完成文本提取和整页目视核对。以下区分 proposal 的承诺和实施前待定事项，尚未验证实时数据或技术栈。
+更新：2026-10-25。本文保留 WikiPulse 启动期（约 2026-10-07）的 proposal 核对与实施前决策；**不是当前实现状态**。实现与实测以 [progress.md](progress.md)、[B/C 契约](docs/wikipulse_bc_contract.md)、各 runbook 和 [最终报告](docs/wikipulse_final_report.md) 为准。下文中“尚未验证 / 仓库尚无实现”等表述是当时快照。
 
 ## 项目变化与已有基础
 
 - 新目标是 Wikipedia 编辑流的实时分析平台，采用 Kafka、Spark 流/批处理、HDFS、Cassandra 和看板，交付 2 页报告。W4 的离线 Taxi 预测仍为已完成课程任务。
 - 可复用的是 Spark/Delta、时间与质量契约、结果一致性检查和可重复评测经验；Kafka/SSE、Structured Streaming 状态处理、HDFS 部署、Cassandra、看板均为新的工作。
-- 本次仓库文件检查未发现 WikiPulse、Kafka/Cassandra 或 Compose 实现。旧模型、测试及单机性能数字不证明新系统可用。
+- （2026-10-07）当时仓库尚无 WikiPulse、Kafka/Cassandra 或 Compose 实现；旧 Taxi 模型与性能数字不证明新系统可用。此后已实现并完成端到端验证。
 - W4 的完整契约、结果和限制保存在 [统一归档](docs/planning_archive/findings.md#archive-2026-10-07-w4-closeout)。
 
 ## Proposal 要求摘录
@@ -46,16 +46,16 @@ proposal 的 20–50 events/s、每日约 200–400 万原始事件，以及语�
 - 各人承担自己模块的启动配置、测试和排障；A 的集成职责不替代模块责任。
 - 后续用户已确认 [B/C 接口 v1](docs/wikipulse_bc_contract.md)：C 提供读写模块，B 在流作业内调用；只展示完成窗口。C 基线按版本发布，B 启动固定版本，通过受控重启切换。
 - UTC、左闭右开和 5 分钟整点对齐已确认；共享过滤/回退规则。基线统计对象为历史 5 分钟计数，而非整小时总数；缺基线/低样本/零标准差保留未检测状态。
-- 字段类型、物理表、阈值及算法细节仍待定；上述决定收敛了前文待定点，不代表已完成实现或验证。
-- 已查阅官方文档：`foreachBatch` 默认至少一次写入，Cassandra 支持按主键 upsert；因此约定稳定键覆盖重试结果，仍需端到端验证。来源链接见接口契约。
+- （当时）字段类型、物理表、阈值及算法细节仍待定；上述决定收敛了前文待定点。接口 v2 与实现见后文及契约。
+- 已查阅官方文档：`foreachBatch` 默认至少一次写入，Cassandra 支持按主键 upsert；因此约定稳定键覆盖重试结果。端到端验证已在后续完成。来源链接见接口契约。
 
 ## 验证范围与问题记录
 
-本次只阅读 PDF、本地规范、配置和模块清单并更新规划；未连接 EventStreams、启动容器或执行新实验。Poppler 渲染提示 Symbol/ArialUnicode 字体警告，但输出整页内容可读，已与文本核对；未修改原 PDF。
+（2026-10-07）本次只阅读 PDF、本地规范、配置和模块清单并更新规划；未连接 EventStreams、启动容器或执行新实验。Poppler 渲染提示 Symbol/ArialUnicode 字体警告，但输出整页内容可读，已与文本核对；未修改原 PDF。
 
 ## 2026-10-13 交接快照核对与接口 v2
 
 - 用 A 的交接快照核对后冻结 [B/C 接口 v2](docs/wikipulse_bc_contract.md)，核对数字记在其文末。要点：重复全为 producer 重试的相邻 offset；正文事件迟到最大 87 秒，2 分钟 watermark 不丢数据；Kafka 时间的空档已由 `Last-Event-ID` 补回，缺口须按事件时间判断；`révo*` 会误配 “révolution”；只要求“换人 ≥ 2 次”会把多名巡查员各自回退误判为编辑战。
 - 事件时间到 Kafka 写入的中位延迟约 148 秒，是来源延迟；性能实验的延迟起点须用回放写入 Kafka 的时间。
-- spark-cassandra-connector 无 Spark 4 正式版（3.5.1 仅 Spark 3.5；Spark 4.1 支持仍是未合并 PR）；改用 Python `cassandra-driver` 3.30.1 在 `foreachBatch` 内写入，结果量小，driver 端写入可行。Grafana 插件 `hadesarchitect-cassandra-datasource` 3.3.0 支持 Grafana 7.4–12.x，Grafana 新镜像以 `GF_PLUGINS_PREINSTALL` 安装插件。以上为资料核查，未实测。
-- 8.2 小时历史每个日内小时最多 12 个窗口，低于最低 24 样本；可靠基线依赖 A 的多日导出。
+- spark-cassandra-connector 无 Spark 4 正式版（3.5.1 仅 Spark 3.5；Spark 4.1 支持仍是未合并 PR）；改用 Python `cassandra-driver` 3.30.1 在 `foreachBatch` 内写入，结果量小，driver 端写入可行。Grafana 插件 `hadesarchitect-cassandra-datasource` 3.3.0 支持 Grafana 7.4–12.x，Grafana 新镜像以 `GF_PLUGINS_PREINSTALL` 安装插件。以上为当时资料核查；Grafana 与写入路径已在后续实测。
+- 8.2 小时历史每个日内小时最多 12 个窗口，低于最低 24 样本；可靠基线依赖多日归档。C 后续用 7 天补拉发布了基线 `20261023T1200Z`。

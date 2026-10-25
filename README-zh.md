@@ -45,7 +45,7 @@ Docker Desktop 至少分配 12 GiB。以下命令都在仓库根目录的 PowerS
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_producer tests.test_wikipulse_archive tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
 ```
 
 课程项目：用 PySpark + Delta Lake 处理四份 2024 年纽约市数据。W1 完成摄入、清洗、校验与行程整合；W2 在此基础上增加六个分析查询、四张可复用数据产品，以及针对它们的四类优化对照实验。W3 支持增量更新与 Schema 演进、扩展校验、统一监控，并做了生产就绪评测。

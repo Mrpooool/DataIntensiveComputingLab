@@ -43,7 +43,7 @@ The unit tests need no Docker; the Cassandra tests are skipped unless Cassandra 
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_producer tests.test_wikipulse_archive tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
 ```
 
 A local PySpark and Delta Lake platform for four 2024 New York City datasets. Week 1 ingests, validates and standardizes Taxi Trips, Weather, Air Quality and Taxi Zones, then enriches every accepted trip with hourly weather, PM2.5 and pickup/dropoff zone labels. Week 2 adds six reusable analytical queries, four materialized data products, and controlled experiments that measure four optimization techniques against them. Week 3 adds schema-aware incremental updates, extensible validation, monitoring and production-readiness evaluation. Week 4 builds a zone-hour taxi demand dataset, a train-only feature pipeline and a reproducible, retrainable Spark ML training run, and compares preparing the data from the raw files with preparing it from the platform.
