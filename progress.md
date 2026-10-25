@@ -1,6 +1,6 @@
 # 项目进度
 
-更新：2026-10-25。**W1–W4 已完成；WikiPulse 全链路、7 天基线、看板和三项实验已完成并有实测结果。**剩余：A 汇总 README 运行说明，团队审阅 C 的 2 页报告和编辑战标注，合并 C 的 PR。
+更新：2026-10-25。**W1–W4 已完成；WikiPulse 全链路、7 天基线、看板和三项实验已完成并有实测结果。**C 的 PR #19 已合并，README 已补齐运行顺序。剩余：团队复核 C 的 50 页编辑战标注。
 
 ## W1–W3 历史摘要
 
@@ -106,3 +106,9 @@ A 完成训练集，B 完成特征/模型/再训练入口，C 完成联调修复
 - **编辑战：** 7 天得到 209 个候选页面，随机抽 50 个标注，结果为 8 正、33 负、9 不确定，precision 19.5%（Wilson 95% 区间 10–34%）。标注由 AI 助手按 B 的标准完成，尚无第二人复核。
 - **交付：** C 运行手册重写，新增 [2 页报告](docs/wikipulse_final_report.md)（附 PDF）、编辑战抽样记录和性能结果 CSV；B/C 契约同步看板、延迟定义和 `analysis_rows`。
 - **环境：** 单核 1 GiB 的 Spark worker 扫描多日归档太慢，批处理改在 `spark-client` 中以 local 模式运行，会话内用 `docker update` 把容器内存提到 8 GiB；Compose 文件未改。实验中间结果在已忽略的 `artifacts/wikipulse/`。
+
+## 2026-10-25：交付前文档收尾
+
+- 按队友审核意见，在英文和中文 README 补齐 WikiPulse 完整运行顺序：启动 Compose、建 topic、归档与 producer、基线、流作业、看板、回放与实验、停止与数据保留，细节链接到 A/B/C 运行手册。
+- 更新过时状态：`task_plan.md` 的 Phase 5 和 B/C 接口小节、`docs/wikipulse_role_a_overview.md` 的数据流标注、中文 README 的角色 A 标题。
+- 宿主机 WikiPulse 单测 23 项通过、3 项跳过（Docker 未启动，Cassandra 不可达）。W1–W4 测试仍按文件在宿主机运行，不放进 2 GiB 的 `spark-client` 容器做全量回归。

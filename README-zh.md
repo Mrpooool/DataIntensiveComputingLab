@@ -2,27 +2,55 @@
 
 [English](README.md)
 
-## Final Project：WikiPulse（角色 A）
+## Final Project：WikiPulse
 
-WikiPulse 与 W1–W4 使用独立模块和数据路径，不依赖出租车流水线。角色 A 的实现位于 `src/dic_pipeline/wikipulse/`，负责 Wikimedia SSE → Kafka、Kafka → HDFS/Delta 原始归档，以及固定 Delta 版本回放。Kafka、Spark、HDFS 和 Cassandra 的 Compose 启动配置见 [运行手册](docs/wikipulse_a_runbook.md)，输入字段和保留规则见 [契约](docs/wikipulse_a_contract.md)。
+WikiPulse 与 W1–W4 使用独立模块和数据路径（`src/dic_pipeline/wikipulse/`），不依赖出租车流水线。A 负责 Wikimedia SSE → Kafka、HDFS/Delta 原始归档和固定版本回放（[运行手册](docs/wikipulse_a_runbook.md)、[契约](docs/wikipulse_a_contract.md)）；B 负责 Structured Streaming 的热门条目、编辑战候选、bot/human 活动和异常检测（[运行手册](docs/wikipulse_b_runbook.md)）；C 负责历史基线、Cassandra 结果表、Grafana 看板和实验（[运行手册](docs/wikipulse_c_runbook.md)）。B/C 接口见 [契约](docs/wikipulse_bc_contract.md)，结果见 [2 页报告](docs/wikipulse_final_report.md)。
 
-先启动 Docker Compose 基础服务并创建 `wikipulse.raw.live` topic，再分别运行归档和 producer。容器内使用 `kafka:29092`，宿主机 producer 使用 `localhost:9092`。回放必须使用新的目标 topic 和 run ID：
+### 完整运行顺序
 
-```powershell
-docker compose -f compose.wikipulse.yml up -d
-docker compose -f compose.wikipulse.yml exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic wikipulse.raw.live --partitions 3 --replication-factor 1
-```
+Docker Desktop 至少分配 12 GiB。以下命令都在仓库根目录的 PowerShell 中执行，参数细节见各步链接的运行手册。
 
-角色 A 的本地 smoke test 不需要 Kafka 或原始 Taxi 数据；设置 `JAVA_HOME` 后运行：
+1. 安装宿主机依赖，启动 Kafka、Spark、HDFS、Cassandra、Grafana，创建实时 topic：
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install -r requirements-wikipulse.txt
+   docker compose -f compose.wikipulse.yml build
+   docker compose -f compose.wikipulse.yml up -d
+   docker compose -f compose.wikipulse.yml exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic wikipulse.raw.live --partitions 3 --replication-factor 1
+   ```
+
+2. 一个终端运行原始归档，另一个终端运行 producer。宿主机用 `127.0.0.1:9092`（`localhost` 会先解析成 IPv6）；按组确认才能跟上晚间流量：
+
+   ```powershell
+   docker compose -f compose.wikipulse.yml exec spark-client /usr/local/bin/spark-submit --master spark://spark-master:7077 --driver-memory 768m --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_2.13:4.4.0 scripts/run_wikipulse_archive.py
+   $env:PYTHONPATH = "src"
+   .\.venv\Scripts\python.exe -m scripts.run_wikipulse_producer --bootstrap 127.0.0.1:9092 --ack-every 100
+   ```
+
+3. 从归档的固定 Delta 版本发布基线（版本号由 `scripts/inspect_wikipulse_archive.py` 输出）。异常检测至少需要两天历史（每个 wiki × 小时 24 个样本），不足时异常行状态为 `insufficient_samples`。命令和报告所用 7 天补拉基线 `20261023T1200Z` 见 [C 运行手册](docs/wikipulse_c_runbook.md#baseline)。
+
+4. 用该基线版本启动流作业（[B 运行手册](docs/wikipulse_b_runbook.md#live-run)）：
+
+   ```powershell
+   docker compose -f compose.wikipulse.yml exec spark-client /usr/local/bin/spark-submit --master spark://spark-master:7077 --driver-memory 768m --conf spark.sql.shuffle.partitions=8 --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0,io.delta:delta-spark_2.13:4.4.0 scripts/run_wikipulse_streaming.py --baseline-version <version>
+   ```
+
+5. 打开 Grafana 看板 `http://localhost:3000`（匿名只读）。2 分钟 watermark 关闭首批窗口后才有结果。
+
+6. 回放和实验从固定归档版本写入新 topic 和独立的 `wikipulse_replay_<run_id>` keyspace，不影响实时结果：见 [A 回放](docs/wikipulse_a_runbook.md)、[B 隔离回放](docs/wikipulse_b_runbook.md#isolated-replay) 和 [C 实验](docs/wikipulse_c_runbook.md#experiments)。
+
+7. 停止：中断 producer、归档和流作业，再运行 `docker compose -f compose.wikipulse.yml stop`。命名卷保留 Kafka、HDFS 和 Cassandra 数据；`down -v` 会删除它们。
+
+单元测试不需要 Docker；Cassandra 相关测试在 `localhost` 连不上时自动跳过：
 
 ```powershell
 $env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a -v
+.\.venv\Scripts\python.exe -m unittest tests.test_wikipulse_a tests.test_wikipulse_events tests.test_wikipulse_baseline tests.test_wikipulse_store tests.test_wikipulse_streaming -v
 ```
 
 课程项目：用 PySpark + Delta Lake 处理四份 2024 年纽约市数据。W1 完成摄入、清洗、校验与行程整合；W2 在此基础上增加六个分析查询、四张可复用数据产品，以及针对它们的四类优化对照实验。W3 支持增量更新与 Schema 演进、扩展校验、统一监控，并做了生产就绪评测。
 
-截至 2026-09-27：W1、W2、W3 的代码、全量运行与评测均已完成。进度见 [progress.md](progress.md)。
+W1–W4 的代码、全量运行与评测均已完成。进度见 [progress.md](progress.md)。
 
 ## 环境与输入
 
